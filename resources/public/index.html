@@ -129,6 +129,7 @@
   <button class="crumb" id="crumb"><span class="ov" id="crumbHint">⊞ overview</span> <b id="crumbName">—</b></button>
   <div class="spacer"></div>
   <div class="ambient" id="ambient"></div>
+  <button class="undoBtn" id="memBtn" title="what the agent remembers — distilled facts with provenance">⌾ memory</button>
   <button class="undoBtn" id="fnBtn" title="peek at the functions in this substrate (for the curious — not the everyday flow)">ƒ functions</button>
   <button class="undoBtn" id="undoBtn" title="revert the last substrate event">↺ undo</button>
 </div>
@@ -593,10 +594,11 @@ async function renderLeap(){
   if(sel>=filtered.length) sel=0;
   if(!filtered.length){ results.innerHTML='<div class="group">no match</div>'; return; }
   let h='',last=null,flat=0;
-  filtered.forEach(e=>{ const grp = e.group==='ask'?'Ask':e.group==='space'?'Spaces':e.group==='viewer'?'View verbs':e.group==='create'?'Create':'Content';
+  const gname={ask:'Ask',space:'Notebooks',viewer:'View verbs',create:'Create',prose:'In notebooks','in text':'In documents',memory:'Memory'};
+  filtered.forEach(e=>{ const grp=gname[e.group]||'Content';
     if(grp!==last){h+='<div class="group">'+grp+'</div>';last=grp;}
     const i=flat++; const cls=(e.group==='space')?'space':(e.group==='viewer'||e.group==='create'||e.group==='ask')?'verb':'';
-    const ic=e.group==='ask'?'✦':e.group==='space'?'▢':e.group==='viewer'?'▸':e.group==='create'?'✦':'▤';
+    const ic=e.group==='ask'?'✦':e.group==='space'?'▢':e.group==='viewer'?'▸':e.group==='create'?'✦':e.group==='memory'?'⌾':e.group==='prose'?'¶':e.group==='in text'?'§':'▤';
     h+='<div class="res '+cls+(i===sel?' sel':'')+'" data-i="'+i+'"><span class="ic">'+ic+'</span>'+
        '<span class="title">'+esc(e.label)+'</span><span class="gp">'+esc(e.id)+'</span></div>'; });
   results.innerHTML=h;
@@ -608,6 +610,8 @@ function act(){ const e=filtered[sel]; if(!e) return;
   else if(e.group==='create'){ createSpace(e.prompt); }
   else if(e.group==='space'){ const i=STATE.spaces.findIndex(s=>s.id===e.id); if(i>=0) enter(i); }
   else if(e.group==='viewer'){ /* a view-verb: no-op until applied to a selection */ closeLeap(); }
+  else if(e.group==='memory'){ const qq=q.value.trim(); closeLeap(); openMemory(qq); }
+  else if(e.group==='prose'){ const i=STATE.spaces.findIndex(s=>s.id===e.id); if(i>=0) enter(i); }
   else { openObject(e.id); } }
 async function createSpace(prompt){
   closeLeap();
@@ -660,6 +664,33 @@ async function openFunctions(){
   modal.querySelector('#closeModal').addEventListener('click',closeModal);
 }
 document.getElementById('fnBtn').addEventListener('click',openFunctions);
+// the agent's memory — browsable, searchable, cited. Revisable and decaying;
+// undo never touches it (that's the record/recall split, visible).
+async function openMemory(qstr){
+  const res=await API.memory(qstr||'');
+  const facts=res.facts||[];
+  let h='<div class="modalcard" style="max-width:720px"><div class="modal-h">'+
+    '<span style="font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:2px 7px">MEMORY</span>'+
+    '<span class="q">'+facts.length+' remembered fact'+(facts.length===1?'':'s')+(qstr?' for “<b>'+esc(qstr)+'</b>”':'')+'</span></div>'+
+    '<div class="modal-b"><input id="memq" placeholder="search memory…" value="'+esc(qstr||'')+'" style="width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:12px">';
+  if(!facts.length) h+='<div style="color:var(--muted);font-size:13px">Nothing yet — memory fills as the agent researches, drafts and answers.</div>';
+  facts.forEach(f=>{
+    const age=Math.round((Date.now()-f.ts)/86400000);
+    h+='<div class="memfact"><div style="font-size:13px">'+esc(f.fact)+'</div>'+
+      '<div class="src"><span class="dots">'+'●'.repeat(Math.min(5,f.strength||1))+'</span> · '+
+      (f.source&&f.source.obj?'<span class="ghostchip" data-open="'+esc(f.source.obj)+'">⌾ '+esc(f.source.obj)+'</span>'
+                             :'⌾ '+esc((f.source&&f.source.space)||'workspace'))+
+      ' · '+(age<1?'today':age+'d ago')+(f.score!==undefined?' · relevance '+(+f.score).toFixed(2):'')+'</div></div>';
+  });
+  h+='</div><div class="modal-f"><button class="btn ghost sm" id="closeModal">Close</button>'+
+    '<span style="font-size:11.5px;color:var(--muted)">the agent’s recall — revisable, never undone</span></div></div>';
+  modal.innerHTML=h; modal.classList.add('on');
+  modal.querySelector('#closeModal').addEventListener('click',closeModal);
+  const mq=modal.querySelector('#memq');
+  mq.addEventListener('keydown',e=>{ if(e.key==='Enter') openMemory(mq.value.trim()); });
+  modal.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>{ closeModal(); openObject(el.dataset.open); }));
+}
+document.getElementById('memBtn').addEventListener('click',()=>openMemory(''));
 modal.addEventListener('click',e=>{ if(e.target===modal) closeModal(); });
 async function askAgent(prompt, space){
   closeLeap();
