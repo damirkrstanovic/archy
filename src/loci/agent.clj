@@ -164,3 +164,30 @@
                  "\"members\":[id,...] (only ids from the list that are genuinely relevant; may be empty)}.")]
     (json/read-str (chat [{:role "system" :content sys} {:role "user" :content prompt}] :json? true)
                    :key-fn keyword)))
+
+(defn distill-facts
+  "Post-flow memory distillation: pull 1-5 durable, atomic facts out of what an
+   agent flow produced. Returns [{:fact string :entities [string]} …]."
+  [context text]
+  (let [sys (str "Extract 1-5 durable, atomic facts worth remembering from this work — "
+                 "figures, causal claims, named entities. One sentence each; skip process "
+                 "notes and pleasantries. Respond ONLY as JSON "
+                 "{\"facts\":[{\"fact\":\"…\",\"entities\":[\"lowercase\",…]}]}."
+                 (when (seq (str context)) (str "\nThe work was about: " context)))]
+    (:facts (json/read-str (chat [{:role "system" :content sys}
+                                  {:role "user" :content (str text)}] :json? true)
+                           :key-fn keyword))))
+
+(defn propose-subtopics
+  "Deep-dive planning: given a research-hub notebook, propose 2-3 focused
+   subtopics. Returns [{:title string :intent string :query string} …]."
+  [title intent digest]
+  (let [sys (str "You plan research deep-dives. Given a hub notebook, propose 2-3 focused "
+                 "subtopics that each deserve their own notebook. Respond ONLY as JSON "
+                 "{\"subtopics\":[{\"title\":\"short\",\"intent\":\"one sentence\","
+                 "\"query\":\"the research question to pursue\"}]}.\n"
+                 "Hub: " title ". Intent: " intent ".\nFindings so far:\n" digest)]
+    (:subtopics (json/read-str (chat [{:role "system" :content sys}
+                                      {:role "user" :content "Propose the deep-dives now."}]
+                                     :json? true)
+                               :key-fn keyword))))
