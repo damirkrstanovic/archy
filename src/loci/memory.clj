@@ -59,11 +59,15 @@
           rec (if dup
                 (-> dup
                     (assoc :fact fact :ts (System/currentTimeMillis))
+                    (assoc :source (or (:source opts) (:source dup)))
                     (update :strength (fnil inc 1))
                     (update :entities #(vec (distinct (concat % (:entities opts))))))
-                {:id (str "mem-" (inc (count @!facts)))
-                 :fact fact :entities (vec (:entities opts))
-                 :source (:source opts) :ts (System/currentTimeMillis) :strength 1})]
+                (do
+                  ;; count-based ids are collision-free ONLY while memory is
+                  ;; append-only (reinforce keeps ids; nothing ever deletes)
+                  {:id (str "mem-" (inc (count @!facts)))
+                   :fact fact :entities (vec (:entities opts))
+                   :source (:source opts) :ts (System/currentTimeMillis) :strength 1}))]
       (append-line! file rec)
       (swap! !facts assoc (:id rec) rec)
       :ok))

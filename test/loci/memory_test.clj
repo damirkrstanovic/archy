@@ -35,3 +35,16 @@
     (let [fs (mem/all-facts (mem/file-memory path))]
       (is (= 1 (count fs)))
       (is (= 2 (:strength (first fs)))))))
+
+(deftest recall-ranks-competing-facts
+  (let [m (mem/file-memory (tmpfile))]
+    (mold/remember m "Taiwan produces advanced chips for global markets" {:entities ["taiwan"]})
+    (mold/remember m "Japan supplies chemicals for semiconductor production" {:entities ["japan"]})
+    ;; both mention chips and production; taiwan fact matches the query's entity → ranks first
+    (is (= ["Taiwan produces advanced chips for global markets"
+            "Japan supplies chemicals for semiconductor production"]
+           (mapv :fact (mold/recall m "taiwan chips production" {:k 5}))))
+    ;; reinforcing the japan fact (near-duplicate wording) boosts its strength…
+    (mold/remember m "Japan supplies key chemicals for semiconductor production" {:entities ["japan"]})
+    ;; …so for a neutral query it now outranks the unreinforced fact
+    (is (= "mem-2" (:id (first (mold/recall m "chemicals production" {:k 5})))))))
