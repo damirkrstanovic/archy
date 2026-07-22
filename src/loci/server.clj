@@ -136,11 +136,17 @@
      :cells cells :connected connected :events (count (sub/history st))}))
 
 (defn notebook-op! [st {:keys [space] :as body}]
-  (if-not (sub/object st space)
-    {:error (str "no notebook " space)}
-    (do (sub/commit! st (nb/set-cells-event
-                         space (nb/cell-op (nb/cells-of (sub/object st space)) body)))
-        {:state (state-payload st) :notebook (notebook-payload st space)})))
+  (let [o (sub/object st space)]
+    (cond
+      (not (= :space (:kind o)))
+      {:error (str "not a notebook: " space)}
+      :else
+      (let [cells  (nb/cells-of o)
+            cells' (nb/cell-op cells body)]
+        ;; unknown op / stale idx fall through unchanged — don't commit a phantom event
+        (when (not= cells cells')
+          (sub/commit! st (nb/set-cells-event space cells')))
+        {:state (state-payload st) :notebook (notebook-payload st space)}))))
 
 ;; ---- writes (every one a substrate event) ----
 (defn edit! [st id value]
@@ -472,22 +478,24 @@
 ;; recalled memory), each spawned as a connected notebook and researched.
 (defn deep-dive! [st space]
   (try
-    (let [sp     (sub/object st space)
-          digest (str (->> (nb/cells-of sp) (keep #(sub/object st (:ref %)))
-                           (map obj-digest) (str/join "\n"))
-                      (remembered-context (str (:title sp) " " (get-in sp [:value :intent]))))
-          subs*  (take 3 (agent/propose-subtopics (:title sp) (get-in sp [:value :intent]) digest))
-          spawned
-          (vec (for [{:keys [title intent query]} subs*]
-                 (let [n   (count (nb/notebooks st))
-                       sid (str "space:dd-" (inc n))]
-                   (sub/commit! st {:op :put :id sid
-                                    :value {:id sid :kind :space :title title
-                                            :value {:intent intent :cells []
-                                                    :spawned-by {:space space :prompt query}}}})
-                   (research! st sid query)
-                   sid)))]
-      {:state (state-payload st) :spawned spawned})
+    (let [sp (sub/object st space)]
+      (if-not (= :space (:kind sp))
+        {:error (str "not a notebook: " space)}
+        (let [digest (str (->> (nb/cells-of sp) (keep #(sub/object st (:ref %)))
+                               (map obj-digest) (str/join "\n"))
+                          (remembered-context (str (:title sp) " " (get-in sp [:value :intent]))))
+              subs*  (take 3 (agent/propose-subtopics (:title sp) (get-in sp [:value :intent]) digest))
+              spawned
+              (vec (for [{:keys [title intent query]} subs*]
+                     (let [n   (count (nb/notebooks st))
+                           sid (str "space:dd-" (inc n))]
+                       (sub/commit! st {:op :put :id sid
+                                        :value {:id sid :kind :space :title title
+                                                :value {:intent intent :cells []
+                                                        :spawned-by {:space space :prompt query}}}})
+                       (research! st sid query)
+                       sid)))]
+          {:state (state-payload st) :spawned spawned})))
     (catch Exception e {:error (.getMessage e)})))
 
 ;; ---- routing ----
@@ -518,7 +526,9 @@
                                                   (if (seq qq)
                                                     (mold/recall @mem/memory qq {:k 20})
                                                     (mem/all-facts @mem/memory)))})
-      (= uri "/api/deep-dive")(json-resp (deep-dive! st (:space (body-json req))))
+      (= uri "/api/deep-dive")(if (= :post (:request-method req))
+                                (json-resp (deep-dive! st (:space (body-json req))))
+                                {:status 405 :headers {"Content-Type" "text/plain"} :body "POST only"})
       (str/starts-with? uri "/api/object/")
       (json-resp (mold-payload st (java.net.URLDecoder/decode (subs uri (count "/api/object/")) "UTF-8") nil))
       :else {:status 404 :headers {"Content-Type" "text/plain"} :body "not found"})))
