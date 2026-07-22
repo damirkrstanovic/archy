@@ -1,0 +1,166 @@
+(ns loci.agent
+  "The assistance layer — a DeepSeek (OpenAI-compatible) client.
+
+   Two uses, both Raskin-honest: the agent only ever *proposes*. For molding it
+   emits a declarative view-spec our deterministic interpreter executes; for
+   delegation it drafts text that lands as a reversible substrate object. The
+   probabilistic model never touches the substrate's rules directly.
+
+   Key is read from .deepseek-key (gitignored) or DEEPSEEK_API_KEY."
+  (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [org.httpkit.client :as hc]))
+
+(def ^:private endpoint "https://api.deepseek.com/chat/completions")
+(def ^:private model "deepseek-chat")
+
+(defn- api-key []
+  (or (System/getenv "DEEPSEEK_API_KEY")
+      (let [f (io/file ".deepseek-key")] (when (.exists f) (str/trim (slurp f))))))
+
+(defn request
+  "POST to DeepSeek; return the assistant message map {:content .. :tool_calls ..}."
+  [messages & {:keys [json? tools]}]
+  (let [key (or (api-key) (throw (ex-info "no DeepSeek key (.deepseek-key / DEEPSEEK_API_KEY)" {})))
+        resp @(hc/post endpoint
+                {:timeout 60000
+                 :headers {"Authorization" (str "Bearer " key) "Content-Type" "application/json"}
+                 :body (json/write-str (cond-> {:model model :messages messages :temperature 0.2}
+                                         json? (assoc :response_format {:type "json_object"})
+                                         tools (assoc :tools tools)))})]
+    (when-let [e (:error resp)] (throw (ex-info (str "DeepSeek request failed: " e) {})))
+    (let [body (json/read-str (:body resp) :key-fn keyword)]
+      (when (:error body) (throw (ex-info (str "DeepSeek error: " (get-in body [:error :message])) {})))
+      (-> body :choices first :message))))
+
+(defn chat
+  "Send messages; return the assistant text content. :json? true forces JSON."
+  [messages & opts]
+  (:content (apply request messages opts)))
+
+(defn- strip-dsml
+  "DeepSeek sometimes leaks tool-call markup (<｜｜DSML｜｜…>) into content text.
+   Cut from the first such marker to the end — it's always trailing junk."
+  [s]
+  (when s (str/trim (str/replace s #"(?s)<[^>]*DSML.*$" ""))))
+
+(defn chat-tools
+  "Tool-using loop: the model may emit tool_calls, which `tool-fn` (name args ->
+   result data) executes; results feed back until it returns a final answer.
+   Capped at 5 rounds."
+  [messages tools tool-fn]
+  (loop [msgs (vec messages) n 0]
+    (let [msg (request msgs :tools tools)
+          tcs (:tool_calls msg)]
+      (if (and (seq tcs) (< n 5))
+        (let [results (mapv (fn [tc]
+                              (let [nm   (get-in tc [:function :name])
+                                    args (try (json/read-str (get-in tc [:function :arguments]) :key-fn keyword)
+                                              (catch Exception _ {}))]
+                                {:role "tool" :tool_call_id (:id tc)
+                                 :content (json/write-str (tool-fn nm args))}))
+                            tcs)]
+          (recur (into (conj msgs msg) results) (inc n)))
+        ;; If the model still wants tools but we hit the cap, force one final
+        ;; turn telling it to stop and synthesize — otherwise it leaks the tool
+        ;; call as raw DSML text. ponytail: one extra call, no state machine.
+        (strip-dsml
+         (if (seq tcs)
+           (:content (request (conj msgs {:role "user" :content
+             "Stop using tools. Using only what you've gathered, write the final answer now. Do NOT emit any tool call."})))
+           (:content msg)))))))
+
+(defn- strip-code-fence [s]
+  (when s (-> s str/trim
+              (str/replace #"(?s)^```[a-zA-Z]*\n?" "")
+              (str/replace #"(?s)\n?```\s*$" "")
+              str/trim)))
+
+(defn make-applet
+  "Natural-language request → a self-contained JS function body that visualizes
+   or computes over the object's rows. Called in the browser as fn(data, el):
+   `data` is the array of row objects, `el` is an empty element to render into.
+   The agent proposes; the code is stored as a reversible, inspectable object."
+  [columns sample prompt]
+  (let [sys (str "You write ONE self-contained JavaScript function BODY that renders a visualization in the "
+                 "browser. It is called as fn(data, el): `data` is an array of row objects with keys "
+                 (json/write-str columns) " (sample: " (json/write-str sample) "); `el` is an empty DOM "
+                 "element you render into. Create a <canvas> or DOM nodes inside `el` and draw. For animation "
+                 "use requestAnimationFrame and STOP the loop when the element leaves the page: start each "
+                 "frame with `if(!el.isConnected)return;`. Size to ~640x420. Use only vanilla JS and the "
+                 "Canvas/DOM APIs — NO external libraries, NO imports, NO network. Derive everything from "
+                 "`data`. Respond with ONLY the function body (statements) — no markdown fences, no prose, "
+                 "no function signature, no surrounding braces.")]
+    (strip-code-fence (chat [{:role "system" :content sys} {:role "user" :content prompt}]))))
+
+
+(defn choose-technique
+  "Given a table and a free-form request, pick the SIMPLEST mechanism that does
+   the job. The user never picks the implementation — the agent does."
+  [columns sample prompt]
+  (let [sys (str "A user wants something done with a data table (columns " (json/write-str columns)
+                 ", sample " (json/write-str sample) "). Pick the SIMPLEST technique. Respond ONLY as "
+                 "JSON {\"technique\": one of}:\n"
+                 "\"view\" — a static rendering of the EXISTING rows: chart (bar/line), grouped/aggregated/"
+                 "sorted/filtered/pivoted table, cards or list. Prefer this whenever a declarative chart or "
+                 "table answers the request.\n"
+                 "\"transform\" — produce NEW data to keep: add or derive a column, compute, filter or "
+                 "aggregate INTO a new table the user can mold further.\n"
+                 "\"applet\" — needs custom drawing, animation, simulation or interaction a static chart "
+                 "can't do (e.g. animate, simulate, orbit, interactive).\n"
+                 "Choose exactly one.")
+        t (-> (chat [{:role "system" :content sys} {:role "user" :content prompt}] :json? true)
+              (json/read-str :key-fn keyword) :technique)]
+    (if (#{"view" "applet" "transform"} t) t "view")))
+
+(defn make-clj-transform
+  "Natural-language request → a Clojure expression that evaluates to a pure
+   (fn [rows] …) returning new rows. Run SCI-sandboxed on the JVM — computation
+   stays in the substrate's own language; the browser only renders the result."
+  [columns sample prompt]
+  (let [kws (str/join " " (map #(str ":" %) columns))
+        sys (str "You write ONE Clojure expression over `rows` — a vector of maps with KEYWORD keys " kws " "
+                 "(sample: " (json/write-str sample) "). `rows` is already bound; write a bare expression that "
+                 "uses it (e.g. `(->> rows (map …))`) OR `(fn [rows] …)`. It MUST return a new vector of maps — you may add "
+                 "keys, derive values, filter, sort, group/aggregate. Keep existing keys unless asked "
+                 "otherwise; new keys are keywords with short snake_case names. Use ONLY clojure.core and "
+                 "Math/* (e.g. Math/round, Math/pow, Math/sqrt). NO other Java interop, NO I/O, NO atoms. "
+                 "IMPORTANT: numeric results must be doubles or rounded longs, NEVER ratios — wrap division "
+                 "as (double (/ a b)) or round it. Respond with ONLY the Clojure expression — no markdown "
+                 "fences, no prose, no comments.")]
+    (strip-code-fence (chat [{:role "system" :content sys} {:role "user" :content prompt}]))))
+
+(defn describe-view
+  "Natural-language request → a JSON view-spec over the given columns."
+  [columns sample prompt]
+  (let [sys (str "Translate a natural-language request into a JSON view-spec over tabular data. "
+                 "Available columns: " (json/write-str columns) ". Sample rows: " (json/write-str sample) ". "
+                 "Respond ONLY with JSON: {\"label\":string, \"kind\":\"table|chart|cards|list\", "
+                 "\"chart\":\"bar|line\"|null, \"group_by\":col|null, \"measure\":numeric-col|null, "
+                 "\"agg\":\"sum|avg|count\", \"filter\":{\"col\":..,\"op\":\"=|>|<\",\"val\":..}|null, "
+                 "\"sort\":\"asc|desc\"|null, \"limit\":int|null, \"columns\":[col,...]|null}. "
+                 "Use only listed column names. Keep the spec minimal and faithful to the request.")]
+    (json/read-str (chat [{:role "system" :content sys} {:role "user" :content prompt}] :json? true)
+                   :key-fn keyword)))
+
+(defn answer
+  "Answer a question grounded in a digest of the workspace data."
+  [digest question]
+  (chat [{:role "system"
+          :content (str "Answer the user's question using ONLY the workspace data below. "
+                        "Cite the object ids you used (e.g. tbl:revenue). If the data doesn't contain "
+                        "the answer, say so plainly — do not invent. Be concise. Markdown.\n\n"
+                        "=== WORKSPACE DATA ===\n" digest)}
+         {:role "user" :content question}]))
+
+(defn plan-space
+  "A user's goal → a space (intention) + the relevant existing objects to gather."
+  [objects prompt]
+  (let [sys (str "You set up a workspace 'space' — an intention — from the user's goal. "
+                 "Existing objects you may gather as members: " (json/write-str objects) ". "
+                 "Respond ONLY with JSON: {\"title\":string (short, no quotes), "
+                 "\"intent\":string (one sentence), "
+                 "\"members\":[id,...] (only ids from the list that are genuinely relevant; may be empty)}.")]
+    (json/read-str (chat [{:role "system" :content sys} {:role "user" :content prompt}] :json? true)
+                   :key-fn keyword)))

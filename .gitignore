@@ -1,0 +1,7 @@
+.deepseek-key
+.cpcache/
+target/
+.tavily-key
+.clerk/
+.superpowers/
+data/

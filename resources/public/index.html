@@ -1,0 +1,572 @@
+<!doctype html>
+<!-- loci shell — layer 5. Spaces + LEAP, data-driven from the Clojure substrate (/api). -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loci</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Serif&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#ECEEEA; --panel:#F7F8F5; --white:#fff;
+    --ink:#1B211E; --ink-2:#3f4a44; --muted:#6d7872; --faint:#97a09a;
+    --line:#d6dad3; --line-2:#e6e9e3; --record:#c8cdc5;
+    --accent:#2f6f5b; --accent-line:#73a797; --accent-soft:rgba(47,111,91,.09);
+    --attn:#a9632f; --attn-soft:rgba(169,99,47,.10);
+    --sans:'IBM Plex Sans',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+  button,input{font-family:inherit}
+  mark{background:var(--accent-soft);border-radius:3px;padding:0 1px}
+
+  .topbar{position:fixed;top:0;left:0;right:0;height:58px;z-index:50;display:flex;align-items:center;gap:16px;padding:0 22px;
+          background:linear-gradient(var(--paper),rgba(236,238,234,.85));backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+  .mark{display:flex;align-items:baseline;gap:9px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);position:relative;top:-1px}
+  .wordmark{font-weight:600;font-size:20px;letter-spacing:-.02em}.wordmark span{color:var(--faint);font-weight:400}
+  .crumb{display:flex;align-items:center;gap:9px;cursor:pointer;border:0;background:transparent;font-size:13px;color:var(--muted);padding:6px 10px;border-radius:999px}
+  .crumb:hover{background:var(--panel);color:var(--ink)} .crumb b{color:var(--ink);font-weight:500}
+  .crumb .ov{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--faint)}
+  .spacer{margin-left:auto} .ambient{font-size:12px;color:var(--muted)}
+
+  .leapwrap{position:fixed;top:58px;left:0;right:0;z-index:45;display:flex;justify-content:center;padding:14px 22px 6px;pointer-events:none}
+  .cmd{pointer-events:auto;width:100%;max-width:680px;background:var(--white);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+       box-shadow:0 18px 40px -28px rgba(20,30,25,.45)}
+  .cmd.live{border-color:var(--accent-line)}
+  .cmd-input{display:flex;align-items:center;gap:12px;padding:13px 16px}
+  .leap{font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:3px 8px;flex:none}
+  #q{flex:1;border:0;background:transparent;font-size:16px;color:var(--ink);outline:none}
+  #q::placeholder{color:var(--faint)} .hint{font-size:11.5px;color:var(--faint)}
+  .results{display:none;border-top:1px solid var(--line-2);padding:6px 0;max-height:46vh;overflow:auto}
+  .cmd.live .results{display:block}
+  .group{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);padding:10px 16px 4px}
+  .res{display:flex;align-items:center;gap:12px;padding:8px 16px;cursor:pointer}
+  .res.sel{background:var(--accent-soft)}
+  .res .ic{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;flex:none;border:1px solid var(--record);background:var(--panel)}
+  .res.verb .ic{border:1px solid var(--accent);background:var(--accent);color:#eef6f2}
+  .res.space .ic{border:1px solid var(--ink);background:var(--ink);color:var(--paper)}
+  .res .title{font-size:14px} .res .gp{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--faint)}
+
+  .world{position:fixed;inset:0;z-index:10}
+  .panel{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform,opacity;
+         transition:transform .5s cubic-bezier(.6,.02,.1,1),opacity .4s;background:var(--panel);border:1px solid var(--line);
+         border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 60px -40px rgba(20,30,25,.5)}
+  .world.overview .panel{cursor:pointer} .world.overview .panel:hover{border-color:var(--accent-line)}
+  .p-head{padding:22px 26px 12px;border-bottom:1px solid var(--line-2)}
+  .p-eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-bottom:9px}
+  .p-title{font-size:23px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .p-intent{font-size:13.5px;color:var(--muted);margin:5px 0 0}
+  .p-body{padding:18px 26px 26px;overflow:auto;flex:1}
+  .sec-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:4px 0 11px}
+  .obj{background:var(--white);border:1px solid var(--line);border-radius:10px;padding:13px 15px;margin-bottom:10px;cursor:pointer;transition:border-color .15s,transform .12s}
+  .obj:hover{border-color:var(--record);transform:translateY(-1px)}
+  .obj .ttl{font-size:14px;font-weight:500;display:flex;align-items:center;gap:9px}
+  .chip{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:5px;background:var(--panel);border:1px solid var(--record);color:var(--ink-2)}
+
+  .backlink{border:0;background:transparent;color:var(--accent);font-size:12.5px;cursor:pointer;padding:4px 0;margin-bottom:10px;display:inline-flex;gap:6px}
+  .molder{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--white)}
+  .molder-h{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .molder-h .t{font-weight:600} .molder-h .lab{margin-left:auto;font-size:12px;color:var(--muted)}
+  .molder-h select{padding:4px 8px;border-radius:7px;border:1px solid var(--line);font:inherit}
+  .molder-b{padding:14px}
+  table.mold{border-collapse:collapse;width:100%;font-size:13px}
+  table.mold th{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  table.mold td{padding:4px 8px;border-bottom:1px solid #eee}
+  .moldtext{white-space:pre-wrap;font-size:13px;line-height:1.5} .moldlist{margin:0;padding-left:18px}
+
+  .p-status{position:absolute;top:18px;right:20px;display:none;align-items:center;gap:7px;font-size:11.5px;font-family:var(--mono);color:var(--muted)}
+  .world.overview .p-status{display:flex}
+  .adot{width:7px;height:7px;border-radius:50%;background:var(--record)}
+  .btn{border:1px solid var(--ink);background:var(--ink);color:var(--paper);font-size:13px;font-weight:500;padding:8px 14px;border-radius:8px;cursor:pointer}
+  .btn:hover{opacity:.9} .btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn.sm{padding:4px 10px;font-size:12px}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .undoBtn{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:transparent;font-size:12.5px;color:var(--muted);padding:6px 11px;border-radius:999px;cursor:pointer;font-family:var(--mono)}
+  .undoBtn:hover{border-color:var(--attn);color:var(--attn)}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);z-index:80;background:var(--ink);color:var(--paper);font-size:12.5px;padding:9px 15px;border-radius:999px;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;display:flex;gap:10px;align-items:center}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .u{color:var(--accent-line);cursor:pointer;pointer-events:auto;font-weight:500}
+  .modal{position:fixed;inset:0;z-index:70;background:rgba(20,28,24,.28);backdrop-filter:blur(2px);display:none;align-items:flex-start;justify-content:center;padding-top:92px}
+  .modal.on{display:flex}
+  .modalcard{width:100%;max-width:620px;max-height:76vh;display:flex;flex-direction:column;background:var(--white);border:1px solid var(--line);border-radius:14px;box-shadow:0 40px 80px -40px rgba(20,30,25,.6)}
+  .modal-h{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line-2);background:var(--panel)}
+  .modal-h .q{font-size:13px;color:var(--muted)} .modal-h .q b{color:var(--ink)}
+  .modal-b{padding:18px 20px;overflow:auto;font-size:14px;line-height:1.6;color:var(--ink-2)}
+  .modal-b h3{font-family:'IBM Plex Serif',serif;font-weight:400;font-size:17px;margin:14px 0 6px;color:var(--ink)}
+  .modal-b h4{font-size:14px;margin:12px 0 4px;color:var(--ink)}
+  .modal-f{display:flex;gap:8px;align-items:center;padding:13px 18px;border-top:1px solid var(--line-2);background:var(--panel)}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="topbar">
+  <div class="mark"><span class="dot"></span><span class="wordmark">loci<span>.</span></span></div>
+  <button class="crumb" id="crumb"><span class="ov" id="crumbHint">⊞ overview</span> <b id="crumbName">—</b></button>
+  <div class="spacer"></div>
+  <div class="ambient" id="ambient"></div>
+  <button class="undoBtn" id="fnBtn" title="peek at the functions in this substrate (for the curious — not the everyday flow)">ƒ functions</button>
+  <button class="undoBtn" id="undoBtn" title="revert the last substrate event">↺ undo</button>
+</div>
+
+<div class="leapwrap"><div class="cmd" id="cmd">
+  <div class="cmd-input"><span class="leap">LEAP</span>
+    <input id="q" autocomplete="off" spellcheck="false" placeholder="Type to find anything across the substrate…">
+    <span class="hint">esc · overview</span></div>
+  <div class="results" id="results"></div>
+</div></div>
+
+<div class="world" id="world"></div>
+<div class="toast" id="toast"></div>
+<div class="modal" id="modal"></div>
+
+<script>
+const POST = (url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+const API = {
+  state: () => fetch('/api/state').then(r=>r.json()),
+  object: id => fetch('/api/object/'+encodeURIComponent(id)).then(r=>r.json()),
+  mold: (id,view) => fetch('/api/mold?id='+encodeURIComponent(id)+'&view='+encodeURIComponent(view)).then(r=>r.json()),
+  leap: q => fetch('/api/leap?q='+encodeURIComponent(q)).then(r=>r.json()),
+  undo: () => fetch('/api/undo').then(r=>r.json()),
+  edit: (id,value) => POST('/api/edit',{id,value}),
+  delegate: space => POST('/api/delegate',{space}),
+  do: (id,prompt,space) => POST('/api/do',{id,prompt,space}),
+  functions: () => fetch('/api/functions').then(r=>r.json()),
+  newSpace: prompt => POST('/api/new-space',{prompt}),
+  ask: (prompt,space) => POST('/api/ask',{prompt,space}),
+  keepNote: (space,title,text) => POST('/api/keep-note',{space,title,text}),
+  importCsv: (title,csv,space) => POST('/api/import-csv',{title,csv,space}),
+  research: (space,prompt) => POST('/api/research',{space,prompt}),
+};
+
+let STATE={spaces:[],objects:{}};
+let panels=[], mode='focus', focusIdx=0, openId=null;
+let filtered=[], sel=0;
+
+const world=document.getElementById('world');
+const cmd=document.getElementById('cmd'), q=document.getElementById('q'), results=document.getElementById('results');
+const crumb=document.getElementById('crumb'), crumbName=document.getElementById('crumbName'), crumbHint=document.getElementById('crumbHint');
+const ambient=document.getElementById('ambient');
+
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+// ---------------- boot / state ----------------
+async function boot(){ applyState(await API.state()); rebuild(); }
+function applyState(s){
+  STATE.spaces=s.spaces; STATE.objects={}; s.objects.forEach(o=>STATE.objects[o.id]=o); STATE.events=s.events;
+  renderStrip();
+}
+function renderStrip(){ ambient.textContent = STATE.spaces.length+' spaces · '+Object.keys(STATE.objects).length+' objects · '+STATE.events+' events'; }
+function rebuild(){
+  world.querySelectorAll('.panel').forEach(p=>p.remove()); panels=[];
+  STATE.spaces.forEach((sp,i)=>buildPanel(sp,i));
+  panels.forEach((p,i)=>renderBody(i));
+  layout();
+}
+
+// ---------------- undo + toast (reversibility, made visible) ----------------
+let toastTimer;
+function showToast(msg,undoFn){
+  const t=document.getElementById('toast'); clearTimeout(toastTimer);
+  t.innerHTML=esc(msg)+(undoFn?' <span class="u">Undo</span>':'');
+  t.classList.add('on');
+  if(undoFn) t.querySelector('.u').addEventListener('click',()=>{undoFn();t.classList.remove('on');});
+  toastTimer=setTimeout(()=>t.classList.remove('on'), undoFn?5000:2500);
+}
+async function undo(){
+  const s=await API.undo();
+  const gone = openId && !s.objects.find(o=>o.id===openId);
+  applyState(s); if(gone) openId=null;
+  rebuild(); if(openId) openObject(openId);
+}
+document.getElementById('undoBtn').addEventListener('click',()=>{ undo(); showToast('Reverted last event'); });
+
+function buildPanel(sp,i){
+  const p=document.createElement('div'); p.className='panel'; p.dataset.i=i;
+  p.innerHTML='<div class="p-status"><span class="adot"></span>space</div>'+
+    '<div class="p-head"><div class="p-eyebrow">space · intention</div>'+
+    '<h2 class="p-title">'+esc(sp.title)+'</h2><p class="p-intent">'+esc(sp.intent)+'</p></div>'+
+    '<div class="p-body" id="body'+i+'"></div>';
+  p.addEventListener('click',e=>{ if(mode==='overview'){ e.stopPropagation(); enter(i);} });
+  world.appendChild(p); panels.push(p);
+}
+
+function renderBody(i){
+  const sp=STATE.spaces[i], b=document.getElementById('body'+i);
+  if(i===focusIdx && openId){ renderDetail(i); return; }
+  let h='<div class="actions" style="margin-bottom:6px">'+
+        '<button class="btn sm" id="askBtn">✦ Ask</button>'+
+        '<button class="btn ghost sm" id="researchBtn">🔍 Research</button>'+
+        '<button class="btn ghost sm" id="draftBtn">✎ Draft</button>'+
+        '<button class="btn ghost sm" id="importBtn">＋ Import CSV</button></div>'+
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:16px"><b>Ask</b> a quick question · <b>Research</b> — the agent searches the web &amp; your data and <b>saves findings here</b> · <b>Draft</b> a brief · <b>Import</b> a CSV. Everything reversible.</div>'+
+        '<div class="sec-h">in this space</div>';
+  if(!sp.members.length) h+='<div style="color:var(--muted);font-size:13px;padding:4px 0 8px">Nothing here yet — <b>Research</b> something or <b>Import</b> data to fill this space.</div>';
+  sp.members.forEach(id=>{ const o=STATE.objects[id]||{id,title:id,kind:'?'};
+    h+='<div class="obj" data-open="'+id+'"><div class="ttl">'+esc(o.title)+' <span class="chip">'+id+'</span></div></div>'; });
+  b.innerHTML=h;
+  b.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>openObject(el.dataset.open)));
+  b.querySelector('#draftBtn').addEventListener('click',async()=>{
+    const res=await API.delegate(sp.id);
+    applyState(res.state); openId=res.openId; rebuild(); openObject(res.openId);
+    showToast('Draft written by the agent (reversible)', undo);
+  });
+  b.querySelector('#askBtn').addEventListener('click',()=>startAsk(i));
+  b.querySelector('#researchBtn').addEventListener('click',()=>startResearch(i));
+  b.querySelector('#importBtn').addEventListener('click',()=>startImport(i));
+}
+function startResearch(i){
+  const sp=STATE.spaces[i], b=document.getElementById('body'+i);
+  b.innerHTML='<div class="actions"><input id="rq" placeholder="what should the agent research? e.g. “competitor pricing for X”" '+
+    'style="flex:1;min-width:280px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px">'+
+    '<button class="btn sm" id="goRes">Research</button><button class="btn ghost sm" id="cancelRes">Cancel</button></div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-top:8px">the agent searches the web &amp; your data, then saves a findings note into this space</div>';
+  const go=async()=>{
+    const p=b.querySelector('#rq').value.trim(); if(!p) return;
+    b.innerHTML='<div class="sec-h">researching</div><div style="color:var(--muted);font-size:13px">searching the web &amp; your data — this can take a few seconds…</div>';
+    const res=await API.research(sp.id, p);
+    if(res.error){ showToast('research: '+res.error); renderBody(i); return; }
+    applyState(res.state); openId=res.openId; rebuild(); openObject(res.openId);
+    showToast('Findings saved to '+sp.title+' — reversible', undo);
+  };
+  b.querySelector('#goRes').addEventListener('click',go);
+  b.querySelector('#rq').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
+  b.querySelector('#cancelRes').addEventListener('click',()=>renderBody(i));
+  b.querySelector('#rq').focus();
+}
+function startImport(i){
+  const sp=STATE.spaces[i], b=document.getElementById('body'+i);
+  b.innerHTML='<div class="actions"><input id="ctitle" placeholder="table name…" '+
+    'style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px">'+
+    '<button class="btn sm" id="goImp">Import</button><button class="btn ghost sm" id="cancelImp">Cancel</button></div>'+
+    '<textarea id="csv" placeholder="paste CSV here — first row is the header" '+
+    'style="width:100%;min-height:160px;margin-top:10px;font:12px/1.5 var(--mono);border:1px solid var(--line);border-radius:8px;padding:10px;box-sizing:border-box"></textarea>';
+  const go=async()=>{
+    const csv=b.querySelector('#csv').value.trim(); if(!csv) return;
+    const title=b.querySelector('#ctitle').value.trim()||'Imported CSV';
+    const res=await API.importCsv(title, csv, sp.id);
+    if(res.error){ showToast('import: '+res.error); return; }
+    applyState(res.state); openId=res.openId; rebuild(); openObject(res.openId);
+    showToast('CSV imported as a table — reversible', undo);
+  };
+  b.querySelector('#goImp').addEventListener('click',go);
+  b.querySelector('#cancelImp').addEventListener('click',()=>renderBody(i));
+  b.querySelector('#ctitle').focus();
+}
+function startAsk(i){
+  const sp=STATE.spaces[i], b=document.getElementById('body'+i);
+  b.innerHTML='<div class="actions"><input id="aq" placeholder="ask about '+esc(sp.title)+'…" '+
+    'style="flex:1;min-width:240px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px">'+
+    '<button class="btn sm" id="goAsk">Ask</button><button class="btn ghost sm" id="cancelAsk">Cancel</button></div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-top:8px">answered using only this space’s contents</div>';
+  const go=()=>{ const p=b.querySelector('#aq').value.trim(); if(!p) return; renderBody(i); askAgent(p, sp.id); };
+  b.querySelector('#goAsk').addEventListener('click',go);
+  b.querySelector('#aq').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
+  b.querySelector('#cancelAsk').addEventListener('click',()=>renderBody(i));
+  b.querySelector('#aq').focus();
+}
+
+// ---------------- object detail (molder) ----------------
+async function openObject(id){
+  openId=id;
+  // make sure the owning space is focused
+  const owner=STATE.spaces.findIndex(s=>s.members.includes(id));
+  if(owner>=0 && (mode!=='focus' || focusIdx!==owner)){ focusIdx=owner; }
+  mode='focus'; closeLeap();
+  const m=await API.object(id);
+  renderDetail(focusIdx,m); layout();
+}
+async function remold(id,view){ const m=await API.mold(id,view); renderDetail(focusIdx,m); }
+
+function renderDetail(i,m){
+  const b=document.getElementById('body'+i);
+  if(!m){ b.innerHTML='<div class="sec-h">loading…</div>'; return; }
+  let opts=''; m.alternatives.forEach(([vid,label])=>{ opts+='<option value="'+vid+'"'+(vid===m.view?' selected':'')+'>'+esc(label)+'</option>'; });
+  const describable = m.alternatives.some(a=>a[1]==='Rows');   // a table-shaped object
+  const editBtn = m.kind==='text' ? '<button class="btn ghost sm" id="editbtn" style="margin-left:10px">Edit</button>' : '';
+  const makeBtn = describable ? '<button class="btn ghost sm" id="makebtn" style="margin-left:8px">✦ make…</button>' : '';
+  b.innerHTML='<button class="backlink" id="back">‹ back to the space</button>'+
+    '<div class="molder"><div class="molder-h"><span class="t">'+esc(m.title)+'</span>'+
+    '<span class="lab">view this as</span><select id="moldsel">'+opts+'</select>'+editBtn+makeBtn+'</div>'+
+    '<div class="molder-b" id="moldbody">'+renderMold(m)+'</div></div>';
+  b.querySelector('#back').addEventListener('click',()=>{ openId=null; renderBody(i); });
+  const selEl=b.querySelector('#moldsel');
+  if(selEl) selEl.addEventListener('change',()=>remold(m.id, selEl.value));
+  const eb=b.querySelector('#editbtn'); if(eb) eb.addEventListener('click',()=>startEdit(i,m));
+  const mk=b.querySelector('#makebtn'); if(mk) mk.addEventListener('click',()=>startDo(i,m));
+  if(m.kind==='applet') runApplet(m);
+}
+// run an agent-written applet over the object's data. ponytail: new Function in
+// the page — fine for a local prototype; the agent code self-stops via el.isConnected.
+function runApplet(m){
+  const host=document.getElementById('appletHost'); if(!host) return;
+  try{ (new Function('data','el', m.code))(m.rendered, host); }
+  catch(e){ host.innerHTML='<div style="color:var(--attn);font-size:13px">applet error: '+esc(e.message)+'</div>'; }
+}
+// ONE creative verb over a table. The user says what they want; the agent picks
+// the simplest mechanism (a view, an animation, or a computed table) and routes
+// to it. No technique buttons — loci decides and tells you what it did.
+function startDo(i,m){
+  const body=document.getElementById('body'+i).querySelector('#moldbody');
+  body.innerHTML='<div class="actions"><input id="mq" placeholder="what do you want from this data? e.g. “gdp by continent as a bar” · “add a density column” · “top 10 by revenue” · “animate the orbits”" '+
+    'style="flex:1;min-width:320px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px">'+
+    '<button class="btn sm" id="mgo">Make</button><button class="btn ghost sm" id="mcancel">Cancel</button></div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-top:8px">loci picks the simplest way — a chart/table view, a computed table, or a custom visualization — and lands it as a reversible object</div>';
+  const go=async()=>{
+    const p=body.querySelector('#mq').value.trim(); if(!p) return;
+    body.innerHTML='<div style="color:var(--muted);font-size:13px">working on it…</div>';
+    const sp = mode==='focus' ? STATE.spaces[focusIdx].id : null;
+    const res=await API.do(m.id,p,sp);
+    if(res.error){ showToast('agent: '+res.error); renderDetail(i,m); return; }
+    applyState(res.state);
+    if(res.openId && res.openId!==m.id){ openId=res.openId; rebuild(); }
+    renderDetail(i, res.object);
+    const did={view:'Molded a view',applet:'Built a visualization',transform:'Computed a new table'}[res.technique]||'Done';
+    showToast(did+' (reversible)', undo);
+  };
+  body.querySelector('#mgo').addEventListener('click',go);
+  body.querySelector('#mq').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
+  body.querySelector('#mcancel').addEventListener('click',()=>renderDetail(i,m));
+  body.querySelector('#mq').focus();
+}
+function startEdit(i,m){
+  const body=document.getElementById('body'+i).querySelector('#moldbody');
+  body.innerHTML='<textarea id="ed" style="width:100%;min-height:200px;font:13px/1.5 var(--mono);border:1px solid var(--line);border-radius:8px;padding:10px;box-sizing:border-box">'+esc(m.rendered)+'</textarea>'+
+    '<div class="actions" style="margin-top:10px"><button class="btn sm" id="save">Save</button><button class="btn ghost sm" id="cancel">Cancel</button>'+
+    '<span style="font-size:12px;color:var(--muted)">saving commits a reversible substrate event</span></div>';
+  body.querySelector('#save').addEventListener('click',async()=>{
+    const res=await API.edit(m.id, body.querySelector('#ed').value);
+    applyState(res.state); renderDetail(i, res.object);
+    showToast('Edited — reversible', undo);
+  });
+  body.querySelector('#cancel').addEventListener('click',()=>renderDetail(i,m));
+}
+
+function renderMold(m){
+  const d=m.rendered;
+  switch(m.kind){
+    case 'table':  return tableHTML(d);
+    case 'list':   return '<ul class="moldlist">'+d.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul>';
+    case 'text':   return '<div class="moldtext">'+esc(d)+'</div>';
+    case 'chart':  return chartSVG(d);
+    case 'report': return renderReport(d);
+    case 'cards':  return renderCards(d);
+    case 'kpi':    return renderKPI(d);
+    case 'applet': return '<div id="appletHost" style="min-height:340px"></div>';
+    default:       return '<pre>'+esc(JSON.stringify(d,null,2))+'</pre>';
+  }
+}
+function fmtNum(n){ return (+n).toLocaleString(); }
+function renderCards(rows){
+  if(!rows||!rows.length) return '<i>empty</i>';
+  const cap=24, shown=rows.slice(0,cap);
+  let h='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">';
+  shown.forEach(r=>{ h+='<div style="border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--white)">'+
+    Object.entries(r).map(([k,v])=>'<div style="display:flex;gap:8px;font-size:12px;margin:2px 0"><span style="color:var(--muted);font-family:var(--mono);font-size:10px;min-width:62px;flex:none">'+esc(k)+'</span><span>'+esc(String(v))+'</span></div>').join('')+'</div>'; });
+  h+='</div>';
+  if(rows.length>cap) h+='<div style="font-size:11px;color:var(--muted);margin-top:8px;font-family:var(--mono)">showing '+cap+' of '+rows.length+' cards</div>';
+  return h;
+}
+function renderKPI(k){
+  const up=k.delta>=0;
+  return '<div style="display:flex;gap:28px;align-items:flex-end;flex-wrap:wrap">'+
+    '<div><div style="font-size:11px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em">'+esc(k.metric)+'</div>'+
+    '<div style="font-size:38px;font-weight:600;line-height:1.15">'+fmtNum(k.latest)+'</div>'+
+    '<div style="font-size:13px;color:'+(up?'var(--accent)':'var(--attn)')+'">'+(up?'▲':'▼')+' '+fmtNum(Math.abs(k.delta))+' ('+k.pct+'%) vs prior</div></div>'+
+    '<div style="font-size:12px;color:var(--muted);line-height:1.7">min '+fmtNum(k.min)+'<br>max '+fmtNum(k.max)+'<br>'+k.periods+' periods</div></div>';
+}
+function tableHTML(rows){
+  if(!rows||!rows.length) return '<i>empty</i>';
+  const cols=Object.keys(rows[0]); const cap=60, shown=rows.slice(0,cap);
+  let h='<div style="max-height:360px;overflow:auto"><table class="mold"><thead><tr>'+
+    cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
+    shown.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(String(r[c]))+'</td>').join('')+'</tr>').join('')+
+    '</tbody></table></div>';
+  if(rows.length>cap) h+='<div style="font-size:11px;color:var(--muted);margin-top:6px;font-family:var(--mono)">showing '+cap+' of '+rows.length+' rows</div>';
+  return h;
+}
+function renderReport(blocks){
+  return blocks.map(b=>{
+    switch(b.block){
+      case 'heading': return '<h3 style="font-family:\'IBM Plex Serif\',serif;font-weight:400;font-size:18px;margin:18px 0 6px">'+esc(b.text)+'</h3>';
+      case 'text':    return '<p style="font-size:13.5px;line-height:1.6;color:var(--ink-2);margin:0 0 10px">'+esc(b.text)+'</p>';
+      case 'table':   return (b.title?'<div class="sec-h">'+esc(b.title)+'</div>':'')+tableHTML(b.rows);
+      case 'chart':   return '<div style="margin:6px 0 14px">'+chartSVG(b.spec)+'</div>';
+      default:        return '';
+    }
+  }).join('');
+}
+function chartSVG(spec){
+  if(!spec||!spec.rows||!spec.rows.length) return '<i>no chart</i>';
+  const rows=spec.rows, xf=spec.x, yf=spec.y;
+  const W=520,H=200,pad=36;
+  const colors=['#2f6f5b','#a9632f','#3f7d5f','#7a5ea7','#9a6a2f','#4a6d8f'];
+  if(spec.chart==='bar'){
+    const maxy=Math.max(1,...rows.map(r=>+r[yf]));
+    const bw=(W-2*pad)/rows.length; let g='';
+    rows.forEach((r,i)=>{ const bh=(+r[yf]/maxy)*(H-2*pad); const x=pad+i*bw+bw*0.15; const y=H-pad-bh;
+      g+='<rect x="'+x+'" y="'+y+'" width="'+(bw*0.7)+'" height="'+bh+'" rx="2" fill="'+colors[i%colors.length]+'"/>';
+      g+='<text x="'+(x+bw*0.35)+'" y="'+(H-pad+13)+'" font-size="9" text-anchor="middle" fill="#6d7872">'+esc(String(r[xf]).slice(0,9))+'</text>'; });
+    return '<svg width="'+W+'" height="'+H+'">'+g+'</svg>';
+  }
+  // line (optionally multi-series)
+  const xs=[...new Set(rows.map(r=>String(r[xf])))].sort();
+  const xi=Object.fromEntries(xs.map((v,i)=>[v,i]));
+  const maxy=Math.max(1,...rows.map(r=>+r[yf]));
+  const sx=v=>pad+(xi[String(v)]/Math.max(1,xs.length-1))*(W-2*pad);
+  const sy=v=>H-pad-(v/maxy)*(H-2*pad);
+  let series; if(spec.series){ series={}; rows.forEach(r=>{(series[r[spec.series]]=series[r[spec.series]]||[]).push(r);}); }
+  else series={'':rows};
+  let g='',ci=0;
+  Object.values(series).forEach(rs=>{ rs=rs.slice().sort((a,b)=>String(a[xf])<String(b[xf])?-1:1);
+    const c=colors[ci++%colors.length];
+    const pts=rs.map(r=>sx(r[xf])+','+sy(+r[yf])).join(' ');
+    g+='<polyline points="'+pts+'" fill="none" stroke="'+c+'" stroke-width="2"/>';
+    rs.forEach(r=>g+='<circle cx="'+sx(r[xf])+'" cy="'+sy(+r[yf])+'" r="2.5" fill="'+c+'"/>'); });
+  return '<svg width="'+W+'" height="'+H+'">'+g+'</svg>';
+}
+
+// ---------------- layout (focus / overview zoom) ----------------
+function layout(){
+  const vw=innerWidth, vh=innerHeight, top=124;
+  const fw=Math.min(940,vw-48), fh=vh-top-28, fx=(vw-fw)/2;
+  panels.forEach(p=>{p.style.width=fw+'px';p.style.height=fh+'px';});
+  if(mode==='focus'){
+    world.classList.remove('overview');
+    panels.forEach((p,k)=>{
+      if(k===focusIdx){p.style.transform='translate('+fx+'px,'+top+'px) scale(1)';p.style.opacity='1';p.style.zIndex=3;p.style.pointerEvents='auto';}
+      else{const off=k<focusIdx?-fw*1.12:fw*1.12;p.style.transform='translate('+(fx+off)+'px,'+top+'px) scale(.86)';p.style.opacity='0';p.style.zIndex=1;p.style.pointerEvents='none';}
+    });
+  } else {
+    world.classList.add('overview');
+    const availH=vh-top, n=Math.max(1,panels.length), cols=Math.min(3,n), rows=Math.ceil(n/cols);
+    const padX=vw*0.05, padTop=top+availH*0.05, cellW=(vw-2*padX)/cols, cellH=(availH*0.9)/rows;
+    const s=Math.min((cellW*0.88)/fw,(cellH*0.88)/fh);
+    panels.forEach((p,k)=>{const col=k%cols,row=Math.floor(k/cols);
+      const cx=padX+col*cellW+cellW/2, cy=padTop+row*cellH+cellH/2+(col%2?availH*0.02:0);
+      p.style.transform='translate('+(cx-fw*s/2)+'px,'+(cy-fh*s/2)+'px) scale('+s+')';
+      p.style.opacity='1';p.style.zIndex=2;p.style.pointerEvents='auto';});
+  }
+  crumbHint.style.display=mode==='overview'?'none':'inline';
+  crumbName.textContent=mode==='overview'?'all spaces':(STATE.spaces[focusIdx]||{}).title||'—';
+}
+function enter(i){ mode='focus'; focusIdx=i; openId=null; closeLeap(); renderBody(i); layout(); }
+function overview(){ mode='overview'; openId=null; closeLeap(); layout(); }
+crumb.addEventListener('click',()=>mode==='focus'?overview():enter(focusIdx));
+addEventListener('resize',layout);
+
+// ---------------- LEAP ----------------
+async function renderLeap(){
+  const qv=q.value.trim();
+  const entries=await API.leap(qv);
+  filtered = qv
+    ? [{id:'__ask__',label:'Ask the agent: “'+qv+'”',group:'ask',prompt:qv}]
+        .concat(entries, [{id:'__new__',label:'New space (agent): “'+qv+'”',group:'create',prompt:qv}])
+    : entries;
+  if(sel>=filtered.length) sel=0;
+  if(!filtered.length){ results.innerHTML='<div class="group">no match</div>'; return; }
+  let h='',last=null,flat=0;
+  filtered.forEach(e=>{ const grp = e.group==='ask'?'Ask':e.group==='space'?'Spaces':e.group==='viewer'?'View verbs':e.group==='create'?'Create':'Content';
+    if(grp!==last){h+='<div class="group">'+grp+'</div>';last=grp;}
+    const i=flat++; const cls=(e.group==='space')?'space':(e.group==='viewer'||e.group==='create'||e.group==='ask')?'verb':'';
+    const ic=e.group==='ask'?'✦':e.group==='space'?'▢':e.group==='viewer'?'▸':e.group==='create'?'✦':'▤';
+    h+='<div class="res '+cls+(i===sel?' sel':'')+'" data-i="'+i+'"><span class="ic">'+ic+'</span>'+
+       '<span class="title">'+esc(e.label)+'</span><span class="gp">'+esc(e.id)+'</span></div>'; });
+  results.innerHTML=h;
+  results.querySelectorAll('.res').forEach(r=>{ r.addEventListener('mousemove',()=>{sel=+r.dataset.i;paintSel();}); r.addEventListener('click',()=>{sel=+r.dataset.i;act();}); });
+}
+function paintSel(){results.querySelectorAll('.res').forEach(r=>r.classList.toggle('sel',+r.dataset.i===sel));}
+function act(){ const e=filtered[sel]; if(!e) return;
+  if(e.group==='ask'){ askAgent(e.prompt, mode==='focus'?STATE.spaces[focusIdx].id:null); }
+  else if(e.group==='create'){ createSpace(e.prompt); }
+  else if(e.group==='space'){ const i=STATE.spaces.findIndex(s=>s.id===e.id); if(i>=0) enter(i); }
+  else if(e.group==='viewer'){ /* a view-verb: no-op until applied to a selection */ closeLeap(); }
+  else { openObject(e.id); } }
+async function createSpace(prompt){
+  closeLeap();
+  showToast('asking the agent to set up a space…');
+  const res=await API.newSpace(prompt);
+  if(res.error){ showToast('agent: '+res.error); return; }
+  applyState(res.state); rebuild();
+  const i=STATE.spaces.findIndex(s=>s.id===res.spaceId);
+  if(i>=0) enter(i);
+  showToast('Space created by the agent — reversible', undo);
+}
+
+// ---------------- ask the agent (grounded answer) ----------------
+const modal=document.getElementById('modal');
+let lastAnswer=null;
+function mdToHtml(md){ return esc(md)
+  .replace(/^### (.*)$/gm,'<h4>$1</h4>').replace(/^## (.*)$/gm,'<h3>$1</h3>').replace(/^# (.*)$/gm,'<h3>$1</h3>')
+  .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/^- (.*)$/gm,'• $1').replace(/\n/g,'<br>'); }
+function openModal(html,question,canKeep,scope){
+  modal.innerHTML='<div class="modalcard"><div class="modal-h">'+
+    '<span style="font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:2px 7px">ANSWER</span>'+
+    '<span class="q">“<b>'+esc(question)+'</b>”</span></div>'+
+    '<div class="modal-b">'+html+'</div>'+
+    '<div class="modal-f">'+(canKeep?'<button class="btn sm" id="keepBtn">Keep as note here</button>':'')+
+    '<button class="btn ghost sm" id="closeModal">Close</button>'+
+    '<span style="font-size:11.5px;color:var(--muted)">grounded in '+esc(scope||'your workspace')+'</span></div></div>';
+  modal.classList.add('on');
+  modal.querySelector('#closeModal').addEventListener('click',closeModal);
+  const kb=modal.querySelector('#keepBtn'); if(kb) kb.addEventListener('click',keepNote);
+}
+function closeModal(){ modal.classList.remove('on'); modal.innerHTML=''; }
+// the functions living in the substrate, with their source — a peek under the
+// hood. Functions ARE objects here: reversible, inspectable. Not the daily flow.
+async function openFunctions(){
+  const list=await API.functions();
+  let h='<div class="modalcard" style="max-width:780px">'+
+    '<div class="modal-h"><span style="font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:2px 7px">FUNCTIONS</span>'+
+    '<span class="q">'+list.length+' in the substrate · each a reversible, inspectable object</span></div><div class="modal-b">';
+  if(!list.length) h+='<div style="color:var(--muted);font-size:13px">No functions yet — on a table use <b>▶ code a view</b>, <b>ƒ compute (JS)</b> or <b>λ compute (Clojure)</b>.</div>';
+  list.forEach(f=>{
+    h+='<div style="border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:10px">'+
+      '<div style="font-size:13px;font-weight:500">'+esc(f.title)+'</div>'+
+      '<div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin:3px 0 8px">'+
+        esc(f.id)+' · '+esc(f.kind)+(f.lang?' · '+esc(f.lang):'')+(f.target?' · over '+esc(f.target):'')+'</div>'+
+      '<pre style="margin:0;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:10px;overflow:auto;font-size:11.5px;line-height:1.5;max-height:260px">'+esc(f.code||'(no code)')+'</pre></div>';
+  });
+  h+='</div><div class="modal-f"><button class="btn ghost sm" id="closeModal">Close</button>'+
+    '<span style="font-size:11.5px;color:var(--muted)">a peek under the hood — not the everyday flow</span></div></div>';
+  modal.innerHTML=h; modal.classList.add('on');
+  modal.querySelector('#closeModal').addEventListener('click',closeModal);
+}
+document.getElementById('fnBtn').addEventListener('click',openFunctions);
+modal.addEventListener('click',e=>{ if(e.target===modal) closeModal(); });
+async function askAgent(prompt, space){
+  closeLeap();
+  const scope = space ? ((STATE.spaces.find(s=>s.id===space)||{}).title) : 'your whole workspace';
+  openModal('<span style="color:var(--muted)">asking DeepSeek, grounded in '+esc(scope||'')+'…</span>', prompt, false, scope);
+  const res=await API.ask(prompt, space);
+  if(res.error){ closeModal(); showToast('agent: '+res.error); return; }
+  lastAnswer={prompt, text:res.answer};
+  openModal(mdToHtml(res.answer), prompt, mode==='focus', scope);
+}
+async function keepNote(){
+  if(!lastAnswer || mode!=='focus') return;
+  const sp=STATE.spaces[focusIdx];
+  const res=await API.keepNote(sp.id, 'Note: '+lastAnswer.prompt.slice(0,48), lastAnswer.text);
+  applyState(res.state); closeModal(); rebuild();
+  showToast('Kept as a note in '+sp.title+' — reversible', undo);
+}
+function openLeap(){ cmd.classList.add('live'); renderLeap(); }
+function closeLeap(){ cmd.classList.remove('live'); q.value=''; q.blur(); }
+q.addEventListener('focus',openLeap);
+q.addEventListener('input',()=>{sel=0;renderLeap();});
+q.addEventListener('keydown',e=>{
+  if(e.key==='ArrowDown'){e.preventDefault();sel=Math.min(sel+1,filtered.length-1);paintSel();}
+  else if(e.key==='ArrowUp'){e.preventDefault();sel=Math.max(sel-1,0);paintSel();}
+  else if(e.key==='Enter'){e.preventDefault();act();}
+  else if(e.key==='Escape'){ if(q.value){q.value='';renderLeap();} else {closeLeap(); if(mode==='focus') overview();} }
+});
+addEventListener('keydown',e=>{
+  if(modal.classList.contains('on')){ if(e.key==='Escape') closeModal(); return; }
+  if(document.activeElement===q) return;
+  // don't steal typing from any focused field (code-a-view, describe, edit, …)
+  { const a=document.activeElement, t=a&&a.tagName; if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT'||(a&&a.isContentEditable)){ if(e.key==='Escape')a.blur(); return; } }
+  if(e.key==='Escape'){ if(openId){openId=null;renderBody(focusIdx);} else if(mode==='focus') overview(); return; }
+  if(e.key.length===1 && !e.metaKey && !e.ctrlKey && !e.altKey) q.focus();
+});
+
+boot();
+</script>

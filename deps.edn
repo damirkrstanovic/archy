@@ -1,0 +1,21 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/clojure   {:mvn/version "1.12.0"}
+        http-kit/http-kit     {:mvn/version "2.8.0"}
+        org.clojure/data.json {:mvn/version "2.5.0"}
+        org.clojure/data.csv  {:mvn/version "1.1.0"}
+        org.babashka/sci      {:mvn/version "0.8.43"}}
+
+ :aliases
+ ;; the loci shell — Clojure substrate served to a web frontend
+ ;; run:  clojure -M:serve   then open http://localhost:7777
+ {:serve {:main-opts ["-m" "loci.server"]}
+
+  ;; headless demo of layers 1/2/4 — no server, no browser
+  :demo  {:main-opts ["-m" "loci.demo"]}
+
+  ;; Clerk notebook (the earlier render target)
+  :dev   {:extra-paths ["dev" "notebooks"]
+          :extra-deps  {io.github.nextjournal/clerk {:mvn/version "0.17.1102"}}}
+  :start {:extra-paths ["dev" "notebooks"]
+          :extra-deps  {io.github.nextjournal/clerk {:mvn/version "0.17.1102"}}
+          :exec-fn     user/start}}}
