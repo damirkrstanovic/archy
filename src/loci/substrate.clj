@@ -70,7 +70,8 @@
     (if (.exists f)
       (with-open [r (java.io.PushbackReader. (io/reader f))]
         (loop [acc []]
-          (let [ev (edn/read {:eof ::eof} r)]
+          ;; a crash mid-append can truncate the last line — salvage the prefix
+          (let [ev (try (edn/read {:eof ::eof} r) (catch Exception _ ::eof))]
             (if (= ::eof ev) acc (recur (conj acc ev))))))
       [])))
 
