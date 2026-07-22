@@ -13,6 +13,7 @@
   (:require [clojure.core.protocols :as p]
             [clojure.string :as str]
             [loci.mold :as mold]
+            [loci.notebook :as nb]
             [loci.substrate :as sub]))
 
 ;; ============================================================================
@@ -474,10 +475,18 @@
           :members ["doc:cosmos" "tbl:planets" "report:cosmos"]})
     (obj "space:world" :space "World — countries & economies"
          {:intent "Compare the largest economies by GDP, population and density."
-          :members ["tbl:countries" "report:world"]})
+          :cells [{:text "Nominal GDP concentrates hard: the United States and China together produce roughly 45% of the output of the 26 largest economies listed here."}
+                  {:ref "tbl:countries" :view "table/bar"}
+                  {:text "Grouped by continent the picture shifts — Europe's many mid-size economies stack up against the two giants."}
+                  {:ref "tbl:countries" :view "table/pivot"}
+                  {:text "The narrative version, for reading end to end:"}
+                  {:ref "report:world"}]})
     (obj "space:commerce" :space "E-commerce — orders"
          {:intent "A 1,000-order book: mold it by category, market, channel and month."
-          :members ["tbl:orders" "report:commerce"]})]))
+          :members ["tbl:orders" "report:commerce"]})
+    (obj "space:semis" :space "Semiconductors — research hub"
+         {:intent "Map the semiconductor supply chain: who makes what, and where are the chokepoints."
+          :cells [{:text "Research hub. Use Research to gather the map; Deep-dive spawns focused notebooks that stay connected here."}]})]))
 
 ;; ============================================================================
 ;; seeded store (layer 1)
@@ -487,10 +496,14 @@
   (doseq [o objects] (sub/commit! store {:op :put :id (:id o) :value o}))
   store)
 
-(defonce store (delay (seed! (sub/fresh-store))))
+(defonce store
+  (delay (let [s (sub/persistent-store)]
+           ;; a non-empty log on disk wins; otherwise seed (which writes the log)
+           (if (seq (sub/history s)) s (seed! s)))))
 
 (defn members [store space-id]
-  (->> (get-in (sub/object store space-id) [:value :members])
+  (->> (nb/cells-of (sub/object store space-id))
+       (keep :ref)
        (map #(sub/object store %))))
 
 ;; ============================================================================

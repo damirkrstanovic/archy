@@ -10,6 +10,9 @@
 (defn- banner [s] (println (str "\n── " s " " (apply str (repeat (max 0 (- 60 (count s))) "─")))))
 
 (defn -main [& _]
+  ;; never touch the real data/ — the demo gets its own throwaway substrate
+  (System/setProperty "loci.data-dir"
+                      (str (System/getProperty "java.io.tmpdir") "/loci-demo-" (System/currentTimeMillis)))
   (let [store @c/store]
 
     (banner "the substrate (layer 1) — content stored as events")
