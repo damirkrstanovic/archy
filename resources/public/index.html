@@ -176,7 +176,7 @@ const cmd=document.getElementById('cmd'), q=document.getElementById('q'), result
 const crumb=document.getElementById('crumb'), crumbName=document.getElementById('crumbName'), crumbHint=document.getElementById('crumbHint');
 const ambient=document.getElementById('ambient');
 
-function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
 // ---------------- boot / state ----------------
 async function boot(){ applyState(await API.state()); rebuild(); }
@@ -233,11 +233,11 @@ function renderBody(i){
 }
 
 async function cellOp(i,body){
-  const sp=STATE.spaces[i];
+  const sp=STATE.spaces[i], before=STATE.events;
   const res=await API.notebookOp(Object.assign({space:sp.id},body));
   if(res.error){ showToast(res.error); return; }
   applyState(res.state); renderBody(i);
-  showToast('Notebook updated — reversible', undo);
+  if(res.state.events>before) showToast('Notebook updated — reversible', undo);
 }
 
 function editProse(i,idx,text){
@@ -260,6 +260,7 @@ async function renderNotebook(i){
   const sp=STATE.spaces[i], b=document.getElementById('body'+i);
   b.innerHTML='<div class="sec-h">loading notebook…</div>';
   const nb=await API.notebook(sp.id);
+  if(mode!=='focus'||i!==focusIdx||openId) return;   // panel moved on while we fetched
   if(nb.error){ b.innerHTML='<div style="color:var(--attn);font-size:13px">'+esc(nb.error)+'</div>'; return; }
   let cellsH='';
   nb.cells.forEach(c=>{
@@ -330,7 +331,9 @@ async function renderNotebook(i){
   }));
   b.querySelector('#addProse').addEventListener('click',()=>editProse(i,null,''));
   const ar=b.querySelector('#addRef');
-  ar.addEventListener('change',()=>{ const id=ar.value.trim(); if(STATE.objects[id]) cellOp(i,{op:'add-ref',ref:id}); });
+  ar.addEventListener('change',()=>{ const id=ar.value.trim(); if(!id) return;
+    if(STATE.objects[id]) cellOp(i,{op:'add-ref',ref:id});
+    else showToast('no object “'+id+'” — pick one from the list'); });
   // agent-written applet cells run scoped to their own cell
   nb.cells.forEach(c=>{
     if(c.type==='ref'&&c.kind==='applet'){
