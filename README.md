@@ -11,7 +11,7 @@ This repo is the Clojure build. (The earlier single-file interaction prototype i
 |---|---|---|
 | 1. Event log | deterministic, reversible (an immutable time-aware DB later: XTDB / Datahike) | **record** |
 | 2. Content store | tables, documents, blobs — stored canonically, `datafy`/`nav`-able | **record** |
-| 3. Recall / AI-memory | entities, relations, temporal, embeddings — `remember`/`recall` (Khora's role) | **recall** |
+| 3. Recall / AI-memory | `loci.memory` — Clojure-native engine (keyword+entity+recency+strength), persisted, agent-written | **recall** |
 | 4. Mold layer | views molded per object, by user *or* agent (Clerk viewer registry) | both |
 | 5. Shell | spaces + LEAP | — |
 
@@ -19,8 +19,10 @@ The **mold layer** (`loci.mold`) is built first and is intentionally UI-free: a 
 data (`{:id :label :pred :render}`), the registry is data, and a view's `:render` returns
 plain Clojure data that any target (Clerk, Portal, a terminal) can draw.
 
-The **recall layer** is stubbed behind the `loci.mold/Recall` protocol — swap in a Khora
-(Python) sidecar or a Clojure-native engine later without touching callers.
+The **recall layer** is a Clojure-native engine (`loci.memory`) behind the
+`loci.mold/Recall` protocol — facts distilled by the agent after every flow,
+with provenance, reinforcement and decay. Undo never touches it: undo reverts
+the record, not the recall. (A Khora sidecar can still replace it — same seam.)
 
 ## Run
 
@@ -33,7 +35,13 @@ clojure -M:demo
 
 # Clerk notebook (an alternative render target)
 clojure -X:start        # starts Clerk + opens notebooks/loci.clj
+
+# run the unit tests
+clojure -M:test
 ```
+
+`clojure -M:serve` persists its state under `data/` (substrate + memory
+event logs) — delete that directory to reset to a clean slate.
 
 The shell talks to the Clojure backend over a JSON API — the HTTP boundary is the
 substrate/assistance seam. Molding is done server-side by `loci.mold`; the
@@ -47,6 +55,10 @@ frontend only lays out the result.
 | `GET /api/mold?id=&view=` | the object re-molded by a chosen viewer |
 | `GET /api/leap?q=` | incremental find across content + view-verbs |
 | `GET /api/undo` | revert the last substrate event |
+| `GET/POST /api/notebook` | a notebook's hydrated cells / one cell operation |
+| `GET /api/links?space=` | computed connectedness (shares / spawned / lineage) |
+| `GET /api/memory?q=` | the agent's memory — browsable, recall-ranked |
+| `POST /api/deep-dive` | spawn + research connected sub-notebooks |
 
 ## Layout
 
@@ -54,8 +66,11 @@ frontend only lays out the result.
 src/loci/substrate.clj   layer 1: append-only event log behind a Store protocol
 src/loci/content.clj     layer 2: populated content + viewers; datafy/nav
 src/loci/mold.clj        layer 4: viewer registry, mold, Recall protocol (UI-free)
+src/loci/memory.clj      layer 3: AI-memory engine (Recall protocol, persisted)
+src/loci/notebook.clj    notebook = space: cells, cell ops, computed links
 src/loci/server.clj      layer 5 backend: substrate + mold served as JSON
 resources/public/index.html   layer 5 frontend: spaces + LEAP shell
 src/loci/demo.clj        headless walkthrough  (clojure -M:demo)
 notebooks/loci.clj       Clerk render target (alternative to the shell)
+docs/walkthrough.md      the four demo flows, step by step
 ```

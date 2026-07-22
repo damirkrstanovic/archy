@@ -4,7 +4,9 @@
   (:require [clojure.datafy :as d]
             [clojure.pprint :refer [pprint]]
             [loci.content :as c]
+            [loci.memory :as mem]
             [loci.mold :as mold]
+            [loci.notebook :as nb]
             [loci.substrate :as sub]))
 
 (defn- banner [s] (println (str "\n── " s " " (apply str (repeat (max 0 (- 60 (count s))) "─")))))
@@ -54,6 +56,37 @@
       (mold/remember r "Q3 churn = 4.2%, up from 3.1% in Q2." {:source "tbl:revenue#R412"})
       (mold/remember r "Pricing changed on March 4." {:source "doc:pricing#v3"})
       (println "recall \"churn\" →" (mapv :fact (mold/recall r "churn" {}))))
+
+    (banner "notebook = space — ordered cells, molded per cell")
+    (doseq [c (nb/cells-of (sub/object store "space:world"))]
+      (println (if (:text c)
+                 (str "   ¶ " (let [t (:text c)] (if (> (count t) 52) (str (subs t 0 52) "…") t)))
+                 (str "   ▤ " (:ref c) (when (:view c) (str "  · molded as " (:view c)))))))
+
+    (banner "persistence — the substrate survives restart")
+    (let [n     (count (sub/history store))
+          again (sub/persistent-store (str (sub/data-dir) "/substrate.edn"))]
+      (println n "events on disk;" (count (sub/history again))
+               "replayed into a fresh store — identical state:" (= (sub/state store) (sub/state again))))
+
+    (banner "links — connectedness is computed, never stored")
+    (println "space:retention ↔"
+             (mapv (fn [c] [(:id c) (mapv :type (:reasons c))])
+                   (:connected (nb/links store "space:retention"))))
+
+    (banner "two logs: substrate records, memory recalls")
+    (let [m (mem/file-memory (str (sub/data-dir) "/memory.edn"))]
+      (mold/remember m "Churn concentrates in accounts under 12 months."
+                     {:entities ["churn"] :source {:obj "tbl:revenue"}})
+      (mold/remember m "Churn concentrates in accounts under twelve months."
+                     {:entities ["retention"] :source {:obj "doc:churn"}})
+      (println "2 remembers, near-duplicate →" (count (mem/all-facts m))
+               "fact, strength" (:strength (first (mem/all-facts m))))
+      (sub/commit! store {:op :assoc :id "doc:churn" :path [:value] :value "scratch"})
+      (sub/undo! store)
+      (println "after a substrate undo!, memory still holds" (count (mem/all-facts m))
+               "fact — undo reverts the record, never the recall")
+      (println "recall \"churn\" →" (mapv :fact (mold/recall m "churn" {}))))
 
     (banner "done")
     (println "layers 1 (event log+undo), 2 (content), 4 (mold) hold; recall stubbed; shell next\n")))

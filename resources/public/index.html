@@ -687,6 +687,7 @@ async function openMemory(qstr){
   modal.innerHTML=h; modal.classList.add('on');
   modal.querySelector('#closeModal').addEventListener('click',closeModal);
   const mq=modal.querySelector('#memq');
+  mq.focus();
   mq.addEventListener('keydown',e=>{ if(e.key==='Enter') openMemory(mq.value.trim()); });
   modal.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>{ closeModal(); openObject(el.dataset.open); }));
 }
