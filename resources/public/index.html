@@ -96,6 +96,31 @@
   .modal-b h3{font-family:'IBM Plex Serif',serif;font-weight:400;font-size:17px;margin:14px 0 6px;color:var(--ink)}
   .modal-b h4{font-size:14px;margin:12px 0 4px;color:var(--ink)}
   .modal-f{display:flex;gap:8px;align-items:center;padding:13px 18px;border-top:1px solid var(--line-2);background:var(--panel)}
+  .prose{font-size:13.5px;line-height:1.65;color:var(--ink-2);margin:0 0 4px;white-space:pre-wrap}
+  .cellwrap{position:relative;padding:2px 0;border-radius:8px}
+  .cellwrap:hover{background:rgba(20,30,25,.02)}
+  .cellbar{position:absolute;top:2px;right:0;display:none;gap:4px;z-index:2}
+  .cellwrap:hover .cellbar{display:flex}
+  .cellbar button{border:1px solid var(--line);background:var(--white);border-radius:6px;font-size:10px;font-family:var(--mono);color:var(--muted);cursor:pointer;padding:2px 6px}
+  .cellbar button:hover{color:var(--ink);border-color:var(--record)}
+  .cellmold{border:1px solid var(--line);border-radius:10px;background:var(--white);margin:6px 0 10px;overflow:hidden}
+  .cellmold .hd{display:flex;align-items:center;gap:8px;padding:7px 11px;background:var(--panel);border-bottom:1px solid var(--line-2);font-size:12.5px}
+  .cellmold .hd .t{font-weight:500;cursor:pointer} .cellmold .hd .t:hover{color:var(--accent)}
+  .cellmold .hd select{margin-left:auto;padding:2px 6px;border-radius:6px;border:1px solid var(--line);font:inherit;font-size:11.5px}
+  .cellmold .bd{padding:10px 12px;overflow-x:auto}
+  .chips{font-size:10.5px;font-family:var(--mono);color:var(--faint);padding:5px 11px;border-top:1px dashed var(--line-2)}
+  .ghostchip{display:inline-block;padding:0 6px;border-radius:4px;background:var(--panel);border:1px solid var(--line);color:var(--muted);cursor:pointer;margin:0 2px}
+  .ghostchip:hover{border-color:var(--accent-line);color:var(--accent)}
+  .nbrow{display:flex;gap:16px;align-items:flex-start}
+  .rail{flex:none;width:210px}
+  .raillink{border:1px solid var(--line);border-radius:9px;background:var(--white);padding:8px 11px;margin-bottom:8px;cursor:pointer;font-size:12.5px}
+  .raillink:hover{border-color:var(--accent-line)}
+  .raillink .why{font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.5}
+  .addrow{display:flex;gap:8px;margin-top:8px;align-items:center}
+  .addrow input{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit;font-size:12.5px}
+  .memfact{border:1px solid var(--line);border-radius:9px;padding:9px 12px;margin-bottom:9px}
+  .memfact .src{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:4px}
+  .memfact .dots{color:var(--accent);letter-spacing:2px}
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 
@@ -136,6 +161,10 @@ const API = {
   keepNote: (space,title,text) => POST('/api/keep-note',{space,title,text}),
   importCsv: (title,csv,space) => POST('/api/import-csv',{title,csv,space}),
   research: (space,prompt) => POST('/api/research',{space,prompt}),
+  notebook: id => fetch('/api/notebook?id='+encodeURIComponent(id)).then(r=>r.json()),
+  notebookOp: body => POST('/api/notebook', body),
+  memory: q => fetch('/api/memory'+(q?'?q='+encodeURIComponent(q):'')).then(r=>r.json()),
+  deepDive: space => POST('/api/deep-dive',{space}),
 };
 
 let STATE={spaces:[],objects:{}};
@@ -155,7 +184,7 @@ function applyState(s){
   STATE.spaces=s.spaces; STATE.objects={}; s.objects.forEach(o=>STATE.objects[o.id]=o); STATE.events=s.events;
   renderStrip();
 }
-function renderStrip(){ ambient.textContent = STATE.spaces.length+' spaces · '+Object.keys(STATE.objects).length+' objects · '+STATE.events+' events'; }
+function renderStrip(){ ambient.textContent = STATE.spaces.length+' notebooks · '+Object.keys(STATE.objects).length+' objects · '+STATE.events+' events'; }
 function rebuild(){
   world.querySelectorAll('.panel').forEach(p=>p.remove()); panels=[];
   STATE.spaces.forEach((sp,i)=>buildPanel(sp,i));
@@ -182,8 +211,8 @@ document.getElementById('undoBtn').addEventListener('click',()=>{ undo(); showTo
 
 function buildPanel(sp,i){
   const p=document.createElement('div'); p.className='panel'; p.dataset.i=i;
-  p.innerHTML='<div class="p-status"><span class="adot"></span>space</div>'+
-    '<div class="p-head"><div class="p-eyebrow">space · intention</div>'+
+  p.innerHTML='<div class="p-status"><span class="adot"></span>notebook</div>'+
+    '<div class="p-head"><div class="p-eyebrow">notebook · intention</div>'+
     '<h2 class="p-title">'+esc(sp.title)+'</h2><p class="p-intent">'+esc(sp.intent)+'</p></div>'+
     '<div class="p-body" id="body'+i+'"></div>';
   p.addEventListener('click',e=>{ if(mode==='overview'){ e.stopPropagation(); enter(i);} });
@@ -193,26 +222,122 @@ function buildPanel(sp,i){
 function renderBody(i){
   const sp=STATE.spaces[i], b=document.getElementById('body'+i);
   if(i===focusIdx && openId){ renderDetail(i); return; }
-  let h='<div class="actions" style="margin-bottom:6px">'+
-        '<button class="btn sm" id="askBtn">✦ Ask</button>'+
-        '<button class="btn ghost sm" id="researchBtn">🔍 Research</button>'+
-        '<button class="btn ghost sm" id="draftBtn">✎ Draft</button>'+
-        '<button class="btn ghost sm" id="importBtn">＋ Import CSV</button></div>'+
-        '<div style="font-size:12px;color:var(--muted);margin-bottom:16px"><b>Ask</b> a quick question · <b>Research</b> — the agent searches the web &amp; your data and <b>saves findings here</b> · <b>Draft</b> a brief · <b>Import</b> a CSV. Everything reversible.</div>'+
-        '<div class="sec-h">in this space</div>';
-  if(!sp.members.length) h+='<div style="color:var(--muted);font-size:13px;padding:4px 0 8px">Nothing here yet — <b>Research</b> something or <b>Import</b> data to fill this space.</div>';
+  if(mode==='focus' && i===focusIdx){ renderNotebook(i); return; }
+  // overview card: cheap title list only — the full notebook loads on focus
+  let h='<div class="sec-h">in this notebook</div>';
+  if(!sp.members.length) h+='<div style="color:var(--muted);font-size:13px;padding:4px 0 8px">Empty — Research or Import to fill it.</div>';
   sp.members.forEach(id=>{ const o=STATE.objects[id]||{id,title:id,kind:'?'};
     h+='<div class="obj" data-open="'+id+'"><div class="ttl">'+esc(o.title)+' <span class="chip">'+id+'</span></div></div>'; });
   b.innerHTML=h;
   b.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>openObject(el.dataset.open)));
+}
+
+async function cellOp(i,body){
+  const sp=STATE.spaces[i];
+  const res=await API.notebookOp(Object.assign({space:sp.id},body));
+  if(res.error){ showToast(res.error); return; }
+  applyState(res.state); renderBody(i);
+  showToast('Notebook updated — reversible', undo);
+}
+
+function editProse(i,idx,text){
+  const b=document.getElementById('body'+i);
+  const target = idx===null ? b.querySelector('.addrow') : b.querySelector('[data-cell="'+idx+'"]');
+  if(!target) return;
+  const ed=document.createElement('div');
+  ed.innerHTML='<textarea class="prosed" style="width:100%;min-height:90px;font:13px/1.6 var(--sans);border:1px solid var(--accent-line);border-radius:8px;padding:9px;box-sizing:border-box">'+esc(text||'')+'</textarea>'+
+    '<div class="actions" style="margin:6px 0 10px"><button class="btn sm" data-a="save">Save</button><button class="btn ghost sm" data-a="cancel">Cancel</button></div>';
+  target.replaceWith(ed);
+  ed.querySelector('[data-a="save"]').addEventListener('click',()=>{
+    const t=ed.querySelector('.prosed').value;
+    cellOp(i, idx===null?{op:'add-text',text:t}:{op:'edit-text',idx,text:t});
+  });
+  ed.querySelector('[data-a="cancel"]').addEventListener('click',()=>renderBody(i));
+  ed.querySelector('.prosed').focus();
+}
+
+async function renderNotebook(i){
+  const sp=STATE.spaces[i], b=document.getElementById('body'+i);
+  b.innerHTML='<div class="sec-h">loading notebook…</div>';
+  const nb=await API.notebook(sp.id);
+  if(nb.error){ b.innerHTML='<div style="color:var(--attn);font-size:13px">'+esc(nb.error)+'</div>'; return; }
+  let cellsH='';
+  nb.cells.forEach(c=>{
+    const bar='<div class="cellbar">'+(c.i>0?'<button data-act="up" data-i="'+c.i+'">↑</button>':'')+
+      (c.i<nb.cells.length-1?'<button data-act="down" data-i="'+c.i+'">↓</button>':'')+
+      (c.type==='text'?'<button data-act="edit" data-i="'+c.i+'">✎</button>':'')+
+      '<button data-act="rm" data-i="'+c.i+'">✕</button></div>';
+    if(c.type==='text'){
+      cellsH+='<div class="cellwrap" data-cell="'+c.i+'">'+bar+'<p class="prose">'+esc(c.text)+'</p></div>';
+    } else if(c.type==='missing'){
+      cellsH+='<div class="cellwrap" data-cell="'+c.i+'">'+bar+'<div style="color:var(--attn);font-size:12px">missing object '+esc(c.ref)+'</div></div>';
+    } else {
+      let opts=''; (c.alternatives||[]).forEach(([vid,label])=>{ opts+='<option value="'+vid+'"'+(vid===c.view?' selected':'')+'>'+esc(label)+'</option>'; });
+      let chips='';
+      if(c.from) chips+='↳ derived from <span class="ghostchip" data-open="'+esc(c.from)+'">'+esc(c.from)+'</span>'+(c.via?' via '+esc(c.via):'');
+      if(c['also-in']&&c['also-in'].length) chips+=(chips?' · ':'')+'↳ also in '+
+        c['also-in'].map(s=>'<span class="ghostchip" data-space="'+esc(s.id)+'">'+esc(s.title)+'</span>').join(' ');
+      cellsH+='<div class="cellwrap" data-cell="'+c.i+'">'+bar+
+        '<div class="cellmold"><div class="hd"><span class="t" data-open="'+esc(c.id)+'">'+esc(c.title)+'</span>'+
+        '<span class="chip">'+esc(c.id)+'</span><select data-remold="'+c.i+'">'+opts+'</select></div>'+
+        '<div class="bd">'+renderMold(c)+'</div>'+(chips?'<div class="chips">'+chips+'</div>':'')+'</div></div>';
+    }
+  });
+  const dl='<datalist id="objlist">'+Object.values(STATE.objects).map(o=>'<option value="'+esc(o.id)+'">'+esc(o.title)+'</option>').join('')+'</datalist>';
+  const add='<div class="addrow"><button class="btn ghost sm" id="addProse">＋ prose</button>'+
+    '<input id="addRef" list="objlist" placeholder="＋ object by id…">'+dl+'</div>';
+  const rail = nb.connected.length
+    ? '<div class="rail"><div class="sec-h">connected · '+nb.connected.length+'</div>'+
+      nb.connected.map(cn=>'<div class="raillink" data-space="'+esc(cn.id)+'"><b>'+esc(cn.title)+'</b><br><span class="why">'+
+        cn.reasons.map(r=>r.type==='spawned'?'deep-dive · spawned from here':r.type==='spawned-by'?'spawned this notebook':r.type==='shares'?'shares '+esc(r.obj):'lineage · '+esc(r.obj)).join('<br>')+
+        '</span></div>').join('')+'</div>'
+    : '';
+  const actions='<div class="actions" style="margin-bottom:6px">'+
+    '<button class="btn sm" id="askBtn">✦ Ask</button>'+
+    '<button class="btn ghost sm" id="researchBtn">🔍 Research</button>'+
+    '<button class="btn ghost sm" id="ddBtn">⌘ Deep-dive</button>'+
+    '<button class="btn ghost sm" id="draftBtn">✎ Draft</button>'+
+    '<button class="btn ghost sm" id="importBtn">＋ Import CSV</button></div>'+
+    (nb['spawned-by']?'<div style="font-size:11px;font-family:var(--mono);color:var(--faint);margin-bottom:8px">spawned from <span class="ghostchip" data-space="'+esc(nb['spawned-by'].space)+'">'+esc(nb['spawned-by'].space)+'</span> · “'+esc(nb['spawned-by'].prompt||'')+'”</div>':'');
+  b.innerHTML=actions+'<div class="nbrow"><div style="flex:1;min-width:0">'+cellsH+add+'</div>'+rail+'</div>';
+  b.querySelector('#askBtn').addEventListener('click',()=>startAsk(i));
+  b.querySelector('#researchBtn').addEventListener('click',()=>startResearch(i));
   b.querySelector('#draftBtn').addEventListener('click',async()=>{
     const res=await API.delegate(sp.id);
     applyState(res.state); openId=res.openId; rebuild(); openObject(res.openId);
     showToast('Draft written by the agent (reversible)', undo);
   });
-  b.querySelector('#askBtn').addEventListener('click',()=>startAsk(i));
-  b.querySelector('#researchBtn').addEventListener('click',()=>startResearch(i));
   b.querySelector('#importBtn').addEventListener('click',()=>startImport(i));
+  b.querySelector('#ddBtn').addEventListener('click',async()=>{
+    b.innerHTML='<div class="sec-h">deep-diving</div><div style="color:var(--muted);font-size:13px">the agent is proposing subtopics, spawning connected notebooks and researching each — this takes a while…</div>';
+    const res=await API.deepDive(sp.id);
+    if(res.error){ showToast('deep-dive: '+res.error); renderBody(i); return; }
+    applyState(res.state); rebuild();
+    showToast('Spawned '+res.spawned.length+' connected deep-dive notebook'+(res.spawned.length===1?'':'s'));
+  });
+  b.querySelectorAll('[data-remold]').forEach(sel=>sel.addEventListener('change',()=>cellOp(i,{op:'set-view',idx:+sel.dataset.remold,view:sel.value})));
+  b.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>openObject(el.dataset.open)));
+  b.querySelectorAll('[data-space]').forEach(el=>el.addEventListener('click',()=>{
+    const j=STATE.spaces.findIndex(s=>s.id===el.dataset.space); if(j>=0) enter(j);
+  }));
+  b.querySelectorAll('.cellbar button').forEach(btn=>btn.addEventListener('click',ev=>{
+    ev.stopPropagation();
+    const idx=+btn.dataset.i, act=btn.dataset.act;
+    if(act==='rm') cellOp(i,{op:'remove',idx});
+    else if(act==='up') cellOp(i,{op:'move',idx,to:idx-1});
+    else if(act==='down') cellOp(i,{op:'move',idx,to:idx+1});
+    else if(act==='edit') editProse(i,idx,(nb.cells[idx]||{}).text||'');
+  }));
+  b.querySelector('#addProse').addEventListener('click',()=>editProse(i,null,''));
+  const ar=b.querySelector('#addRef');
+  ar.addEventListener('change',()=>{ const id=ar.value.trim(); if(STATE.objects[id]) cellOp(i,{op:'add-ref',ref:id}); });
+  // agent-written applet cells run scoped to their own cell
+  nb.cells.forEach(c=>{
+    if(c.type==='ref'&&c.kind==='applet'){
+      const w=b.querySelector('[data-cell="'+c.i+'"]'), host=w&&w.querySelector('#appletHost');
+      if(host){ try{(new Function('data','el',c.code))(c.rendered,host);}catch(e){host.textContent='applet error: '+e.message;} }
+    }
+  });
 }
 function startResearch(i){
   const sp=STATE.spaces[i], b=document.getElementById('body'+i);
@@ -447,7 +572,7 @@ function layout(){
       p.style.opacity='1';p.style.zIndex=2;p.style.pointerEvents='auto';});
   }
   crumbHint.style.display=mode==='overview'?'none':'inline';
-  crumbName.textContent=mode==='overview'?'all spaces':(STATE.spaces[focusIdx]||{}).title||'—';
+  crumbName.textContent=mode==='overview'?'all notebooks':(STATE.spaces[focusIdx]||{}).title||'—';
 }
 function enter(i){ mode='focus'; focusIdx=i; openId=null; closeLeap(); renderBody(i); layout(); }
 function overview(){ mode='overview'; openId=null; closeLeap(); layout(); }
