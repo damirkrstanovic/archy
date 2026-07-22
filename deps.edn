@@ -13,6 +13,12 @@
   ;; headless demo of layers 1/2/4 — no server, no browser
   :demo  {:main-opts ["-m" "loci.demo"]}
 
+  ;; run the unit tests:  clojure -M:test
+  :test  {:extra-paths ["test"]
+          :extra-deps  {io.github.cognitect-labs/test-runner
+                        {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+          :main-opts   ["-m" "cognitect.test-runner"]}
+
   ;; Clerk notebook (the earlier render target)
   :dev   {:extra-paths ["dev" "notebooks"]
           :extra-deps  {io.github.nextjournal/clerk {:mvn/version "0.17.1102"}}}
