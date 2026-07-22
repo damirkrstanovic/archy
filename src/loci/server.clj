@@ -12,7 +12,9 @@
             [org.httpkit.server :as http]
             [loci.agent :as agent]
             [loci.content :as c]
+            [loci.memory :as mem]
             [loci.mold :as mold]
+            [loci.notebook :as nb]
             [loci.substrate :as sub]
             [loci.tools :as tools]
             [loci.viewspec :as vs]))
@@ -44,7 +46,7 @@
      :spaces  (->> objs (filter #(= :space (:kind %)))
                    (map (fn [s] {:id (:id s) :title (:title s)
                                  :intent (get-in s [:value :intent])
-                                 :members (get-in s [:value :members])}))
+                                 :members (vec (keep :ref (nb/cells-of s)))}))
                    vec)
      :objects (->> objs (remove #(#{:space :viewspec :applet :fn} (:kind %)))
                    (map (fn [o] {:id (:id o) :title (:title o) :kind (name (:kind o))}))
@@ -164,8 +166,7 @@
                   evs (cond-> [{:op :put :id fid :value fobj}
                                {:op :put :id nid :value tobj}]
                         (and space (sub/object st space))
-                        (conj {:op :assoc :id space :path [:value :members]
-                               :value (conj (vec (get-in (sub/object st space) [:value :members])) nid)}))]
+                        (conj (nb/append-cell-event st space {:ref nid})))]
               (sub/commit! st {:op :tx :events evs})
               {:state (state-payload st) :openId nid :object (mold-payload st nid nil)})))))
     (catch Exception e {:error (str "compute failed: " (.getMessage e))})))
@@ -262,10 +263,29 @@
            (table-digest v) "\nsample rows: " (json/write-str (vec (take 3 v))))
       :else "")))
 
+;; ---- the recall seam, used by every agent flow ----
+;; remembered-context injects what the agent already learned (cited);
+;; distill! writes new memory AFTER a flow — async, best-effort, never undone.
+(defn- remembered-context [prompt]
+  (let [facts (try (mold/recall @mem/memory prompt {:k 6}) (catch Exception _ nil))]
+    (when (seq facts)
+      (str "\n\nREMEMBERED (distilled from earlier work — cite as ⌾ id when it shapes your answer):\n"
+           (str/join "\n" (map #(str "- " (:fact %) " (⌾ "
+                                     (or (get-in % [:source :obj]) (get-in % [:source :space]) "memory") ")")
+                               facts))))))
+
+(defn- distill! [prompt text obj-id space]
+  (future
+    (try
+      (doseq [{:keys [fact entities]} (agent/distill-facts prompt text)]
+        (mold/remember @mem/memory fact {:entities (mapv str entities)
+                                         :source {:obj obj-id :space space}}))
+      (catch Exception _))))
+
 (defn ask! [st prompt space]
   (try
     (let [objs    (if-let [sp (and space (sub/object st space))]
-                    (keep #(sub/object st %) (get-in sp [:value :members]))  ; scoped to this space
+                    (keep #(sub/object st (:ref %)) (nb/cells-of sp))  ; scoped to this space
                     (vals (sub/objects st)))                                  ; whole workspace
           objs    (remove #(#{:space :viewspec :applet :fn} (:kind %)) objs)
           texty   (remove #(and (sequential? (:value %)) (seq (:value %)) (every? map? (:value %))
@@ -279,13 +299,16 @@
                        "Do NOT guess any table figure — call query_table for exact numbers. "
                        "If the data doesn't say, say so plainly. Be concise, markdown.\n\n"
                        "DOCS:\n" (str/join "\n\n" (map obj-digest texty))
-                       "\n\nTABLES (query these by id):\n" catalog)
+                       "\n\nTABLES (query these by id):\n" catalog
+                       (remembered-context prompt))
           tool-fn (fn [nm a]
                     (if (and allowed (= nm "query_table") (not (allowed (:table_id a))))
                       {:error "that table is not in this space"}
                       (tools/dispatch st nm a)))]
-      {:answer (agent/chat-tools [{:role "system" :content sys} {:role "user" :content prompt}]
-                                 tools/specs tool-fn)})
+      (let [answer (agent/chat-tools [{:role "system" :content sys} {:role "user" :content prompt}]
+                                     tools/specs tool-fn)]
+        (distill! prompt answer nil space)
+        {:answer answer}))
     (catch Exception e {:error (.getMessage e)})))
 
 (defn import-csv! [st title csv space]
@@ -295,27 +318,25 @@
           obj {:id nid :kind :table :title (or (not-empty title) "Imported CSV") :value rows}
           base [{:op :put :id nid :value obj}]
           evs (if (and space (sub/object st space))
-                (conj base {:op :assoc :id space :path [:value :members]
-                            :value (conj (vec (get-in (sub/object st space) [:value :members])) nid)})
+                (conj base (nb/append-cell-event st space {:ref nid}))
                 base)]
       (sub/commit! st {:op :tx :events evs})
       {:state (state-payload st) :openId nid})
     (catch Exception e {:error (.getMessage e)})))
 
 (defn keep-note! [st space title text]
-  (let [sp (sub/object st space)
-        n (count (filter #(str/starts-with? % "note:") (get-in sp [:value :members])))
-        nid (str "note:" (subs space (inc (str/index-of space ":"))) "-" (inc n))
-        mem (conj (vec (get-in sp [:value :members])) nid)]
+  (let [sp  (sub/object st space)
+        n   (count (filter #(str/starts-with? % "note:") (nb/refs-of sp)))
+        nid (str "note:" (subs space (inc (str/index-of space ":"))) "-" (inc n))]
     (sub/commit! st {:op :tx :events [{:op :put :id nid :value {:id nid :kind :doc :title title :value text}}
-                                      {:op :assoc :id space :path [:value :members] :value mem}]})
+                                      (nb/append-cell-event st space {:ref nid})]})
     {:state (state-payload st) :openId nid}))
 
 ;; (2) tool-powered delegation — the agent drafts a brief, calling query_table
 ;; for exact figures (and web_search once a key is set), grounded in the space.
 (defn delegate! [st space]
   (let [sp (sub/object st space)
-        members (->> (get-in sp [:value :members]) (keep #(sub/object st %))
+        members (->> (nb/cells-of sp) (keep #(sub/object st (:ref %)))
                      (remove #(#{:space :viewspec :applet :fn} (:kind %))))
         texty   (remove #(= :table (:kind %)) members)
         tbls    (filter #(= :table (:kind %)) members)
@@ -326,7 +347,8 @@
         sys (str "You are a concise analyst. Draft a short markdown brief (≤150 words, with a heading) "
                  "for this workspace space. Use query_table for any exact figure — never guess. Cite object ids.\n\n"
                  "Space: " (:title sp) ". Intent: " (get-in sp [:value :intent]) ".\n\n"
-                 "DOCS:\n" (str/join "\n\n" (map obj-digest texty)) "\n\nTABLES (query by id):\n" catalog)
+                 "DOCS:\n" (str/join "\n\n" (map obj-digest texty)) "\n\nTABLES (query by id):\n" catalog
+                 (remembered-context (str (:title sp) " " (get-in sp [:value :intent]))))
         tool-fn (fn [nm a] (if (and (= nm "query_table") (not (allowed (:table_id a))))
                              {:error "that table is not in this space"}
                              (tools/dispatch st nm a)))
@@ -334,18 +356,18 @@
                                      {:role "user" :content "Write the brief now."}]
                                     tools/specs tool-fn)
                   (catch Exception e (str "# Draft for " (:title sp) "\n\n_(agent unavailable: " (.getMessage e) ")_")))
-        dn (count (filter #(str/starts-with? % "draft:") (get-in sp [:value :members])))
+        dn (count (filter #(str/starts-with? % "draft:") (nb/refs-of sp)))
         did (str "draft:" (subs space (inc (str/index-of space ":"))) "-" (inc dn))
-        draft {:id did :kind :doc :title (str "Draft — " (:title sp)) :value text}
-        members' (conj (vec (get-in sp [:value :members])) did)]
+        draft {:id did :kind :doc :title (str "Draft — " (:title sp)) :value text}]
     (sub/commit! st {:op :tx :events [{:op :put :id did :value draft}
-                                      {:op :assoc :id space :path [:value :members] :value members'}]})
+                                      (nb/append-cell-event st space {:ref did})]})
+    (distill! (str "brief for " (:title sp)) text did space)
     {:state (state-payload st) :openId did}))
 
 ;; shared agent context for a space (docs inline + table catalog + scoped tools)
 (defn- agent-ctx [st space]
   (let [objs (if-let [sp (and space (sub/object st space))]
-               (keep #(sub/object st %) (get-in sp [:value :members]))
+               (keep #(sub/object st (:ref %)) (nb/cells-of sp))
                (vals (sub/objects st)))
         objs (remove #(#{:space :viewspec :applet :fn} (:kind %)) objs)
         texty (remove #(= :table (:kind %)) objs)
@@ -379,18 +401,19 @@
                    "save_table ONCE with ALL the rows — that table IS the deliverable. After saving it, do "
                    "NOT reproduce the table in your note: write only a 2-3 bullet summary of what the data "
                    "shows and a final '## Sources' section. If there is nothing tabular, write a normal "
-                   "markdown findings note instead. Be specific.\n\n" context)
+                   "markdown findings note instead. Be specific.\n\n" context
+                   (remembered-context prompt))
           text (agent/chat-tools [{:role "system" :content sys} {:role "user" :content prompt}]
                                  tools/specs tf)
           tid (first @saved)
           sp (sub/object st space)
-          n (count (filter #(str/starts-with? % "find:") (get-in sp [:value :members])))
+          n (count (filter #(str/starts-with? % "find:") (nb/refs-of sp)))
           fid (str "find:" (subs space (inc (str/index-of space ":"))) "-" (inc n))
           p (str/trim prompt)
-          title (str "Findings — " (if (> (count p) 44) (str (subs p 0 44) "…") p))
-          mem (conj (vec (get-in sp [:value :members])) fid)]
+          title (str "Findings — " (if (> (count p) 44) (str (subs p 0 44) "…") p))]
       (sub/commit! st {:op :tx :events [{:op :put :id fid :value {:id fid :kind :doc :title title :value text}}
-                                        {:op :assoc :id space :path [:value :members] :value mem}]})
+                                        (nb/append-cell-event st space {:ref fid})]})
+      (distill! prompt text fid space)
       ;; when extraction produced a real table, THAT is the artifact — open it,
       ;; not the prose note. ponytail: open the data, keep the note as context.
       {:state (state-payload st) :openId (or tid fid)})

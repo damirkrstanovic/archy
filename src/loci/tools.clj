@@ -9,6 +9,7 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [org.httpkit.client :as hc]
+            [loci.notebook :as nb]
             [loci.substrate :as sub]
             [loci.viewspec :as vs]))
 
@@ -102,12 +103,10 @@
     (if (empty? rows)
       {:error "no rows to save"}
       (let [nid (str "tbl:extract-" (count (table-objs st)) "-" (inc (rand-int 9999)))
-            obj {:id nid :kind :table :title (or title "Extracted table") :value rows}
-            members (when space (vec (get-in (sub/object st space) [:value :members])))]
-        (sub/commit! st (if space
+            obj {:id nid :kind :table :title (or title "Extracted table") :value rows}]
+        (sub/commit! st (if (and space (sub/object st space))
                           {:op :tx :events [{:op :put :id nid :value obj}
-                                            {:op :assoc :id space :path [:value :members]
-                                             :value (conj members nid)}]}
+                                            (nb/append-cell-event st space {:ref nid})]}
                           {:op :put :id nid :value obj}))
         {:saved_as nid :rows (count rows) :columns (mapv name (keys (first rows)))}))))
 
