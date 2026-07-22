@@ -25,6 +25,15 @@
     (is (= [{:ref "t1"}] (nb/cell-op cells {:op "remove" :idx 0})))
     (is (= [{:ref "t1"} {:text "a"}] (nb/cell-op cells {:op "move" :idx 0 :to 1})))))
 
+(deftest cell-op-is-total-on-bad-input
+  (let [cells [{:text "a"} {:ref "t1"}]]
+    (is (= cells (nb/cell-op cells {:op "edit-text" :idx 1 :text "clobber"})))  ; ref cell: no type-confusion
+    (is (= cells (nb/cell-op cells {:op "set-view" :idx 0 :view "v"})))          ; text cell: no malformed view
+    (is (= cells (nb/cell-op cells {:op "set-view" :idx 2 :view "v"})))          ; idx == count
+    (is (= cells (nb/cell-op cells {:op "remove" :idx 9})))
+    (is (= cells (nb/cell-op cells {:op "edit-text" :idx nil :text "x"})))
+    (is (= cells (nb/cell-op cells {:op "move" :idx 0 :to nil})))))
+
 (deftest links-reasons
   (let [st (sub/fresh-store)]
     (sub/commit! st {:op :put :id "tbl:x" :value {:id "tbl:x" :kind :table :title "X" :value [{:a 1}]}})

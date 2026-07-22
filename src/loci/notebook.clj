@@ -22,19 +22,27 @@
 
 (defn cell-op
   "Pure: apply one UI cell operation to a cells vector.
-   op ∈ add-text | add-ref | edit-text | set-view | remove | move."
+   op ∈ add-text | add-ref | edit-text | set-view | remove | move.
+   Total: a bad or stale idx (or a type mismatch) returns cells unchanged —
+   never corrupt the undo log with a half-applied edit."
   [cells {:keys [op idx text ref view to]}]
-  (let [cells (vec cells)]
+  (let [cells (vec cells)
+        at?   (fn [pred] (and (int? idx) (< -1 idx (count cells))
+                              (pred (cells idx))))]
     (case op
       "add-text"  (conj cells {:text (or text "")})
       "add-ref"   (conj cells (cond-> {:ref ref} (seq view) (assoc :view view)))
-      "edit-text" (assoc cells idx {:text (or text "")})
-      "set-view"  (update cells idx #(if (seq view) (assoc % :view view) (dissoc % :view)))
-      "remove"    (vec (concat (subvec cells 0 idx) (subvec cells (inc idx))))
-      "move"      (let [c  (cells idx)
-                        w  (vec (concat (subvec cells 0 idx) (subvec cells (inc idx))))
-                        to (max 0 (min (count w) to))]
-                    (vec (concat (subvec w 0 to) [c] (subvec w to))))
+      "edit-text" (if (at? :text) (assoc cells idx {:text (or text "")}) cells)
+      "set-view"  (if (at? :ref)
+                    (update cells idx #(if (seq view) (assoc % :view view) (dissoc % :view)))
+                    cells)
+      "remove"    (if (at? any?) (vec (concat (subvec cells 0 idx) (subvec cells (inc idx)))) cells)
+      "move"      (if (and (at? any?) (int? to))
+                    (let [c  (cells idx)
+                          w  (vec (concat (subvec cells 0 idx) (subvec cells (inc idx))))
+                          to (max 0 (min (count w) to))]
+                      (vec (concat (subvec w 0 to) [c] (subvec w to))))
+                    cells)
       cells)))
 
 (defn set-cells-event [space-id cells]
@@ -49,10 +57,10 @@
   "Connectedness for one notebook: {:connected [{:id :title :reasons […]}]
    :also-in {obj-id [{:id :title}]}}. reason :type ∈ shares|spawned|spawned-by|derived."
   [st space-id]
-  (let [nb      (sub/object st space-id)
+  (let [objs    (sub/objects st)
+        nb      (objs space-id)
         mine    (refs-of nb)
-        objs    (sub/objects st)
-        others  (remove #(= (:id %) space-id) (notebooks st))
+        others  (filter #(and (= :space (:kind %)) (not= (:id %) space-id)) (vals objs))
         srcs    (fn [refs] (set (keep #(:from (objs %)) refs)))
         my-srcs (srcs mine)
         connected
