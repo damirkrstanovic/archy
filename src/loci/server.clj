@@ -81,17 +81,66 @@
         {:id id :title (:title o) :kind (name (:kind m)) :view (when (:view m) (kw->str (:view m)))
          :label (:label m) :rendered (:rendered m) :alternatives (alternatives st o)}))))
 
-(defn leap-payload [st q]
-  (let [q (str/lower-case (or q ""))
+(defn leap-payload
+  "ONE incremental search across everything: objects, notebook prose, doc
+   bodies, memory facts, view verbs. Content groups only appear once there's
+   a query; each group is capped so it stays incremental-fast."
+  [st mem q]
+  (let [q    (str/lower-case (or q ""))
+        hit? (fn [& ss] (str/includes? (str/lower-case (str/join " " (map str ss))) q))
+        ell  (fn [s n] (let [s (str/replace (str s) "\n" " ")]
+                         (if (> (count s) n) (str (subs s 0 n) "…") s)))
+        snip (fn [text] (let [i (or (str/index-of (str/lower-case text) q) 0)]
+                          (ell (subs text (max 0 (- i 20))) 70)))
+        cap  (fn [xs] (vec (take 8 xs)))
         objs  (->> (sub/objects st) vals
                    (remove #(#{:viewspec :applet :fn} (:kind %)))
+                   (filter #(or (= q "") (hit? (:title %) (:id %) (name (:kind %)))))
                    (map (fn [o] {:id (:id o) :label (:title o) :group (name (:kind o))})))
         verbs (->> @mold/registry
-                   (map (fn [v] {:id (kw->str (:id v)) :label (str "view as " (:label v)) :group "viewer"})))]
-    (->> (concat objs verbs)
-         (filter (fn [e] (or (= q "")
-                             (str/includes? (str/lower-case (str (:label e) " " (:id e) " " (:group e))) q))))
-         vec)))
+                   (map (fn [v] {:id (kw->str (:id v)) :label (str "view as " (:label v)) :group "viewer"}))
+                   (filter #(or (= q "") (hit? (:label %) (:id %)))))
+        prose (when (seq q)
+                (for [o (nb/notebooks st), c (nb/cells-of o)
+                      :when (and (:text c) (hit? (:text c)))]
+                  {:id (:id o) :label (str (:title o) " · " (snip (:text c))) :group "prose"}))
+        intext (when (seq q)
+                 (for [o (vals (sub/objects st))
+                       :when (and (= :doc (:kind o)) (string? (:value o))
+                                  (hit? (:value o)) (not (hit? (:title o) (:id o))))]
+                   {:id (:id o) :label (str (:title o) " · …" (snip (:value o))) :group "in text"}))
+        mems (when (seq q)
+               (map (fn [f] {:id "__memory__" :label (:fact f) :group "memory"})
+                    (mold/recall mem q {:k 8})))]
+    (vec (concat (cap objs) (cap prose) (cap intext) (cap mems) verbs))))
+
+;; ---- notebook payload: cells hydrated (each ref molded by its chosen view),
+;; rail links and also-in chips computed fresh every time ----
+(defn notebook-payload [st id]
+  (let [o (sub/object st id)
+        {:keys [connected also-in]} (nb/links st id)
+        cells (vec (map-indexed
+                    (fn [i c]
+                      (cond
+                        (:text c) {:i i :type "text" :text (:text c)}
+                        (sub/object st (:ref c))
+                        (merge {:i i :type "ref"
+                                :also-in (get also-in (:ref c))
+                                :from (:from (sub/object st (:ref c)))
+                                :via  (:via (sub/object st (:ref c)))}
+                               (mold-payload st (:ref c) (:view c)))
+                        :else {:i i :type "missing" :ref (:ref c)}))
+                    (nb/cells-of o)))]
+    {:id id :title (:title o) :intent (get-in o [:value :intent])
+     :spawned-by (get-in o [:value :spawned-by])
+     :cells cells :connected connected :events (count (sub/history st))}))
+
+(defn notebook-op! [st {:keys [space] :as body}]
+  (if-not (sub/object st space)
+    {:error (str "no notebook " space)}
+    (do (sub/commit! st (nb/set-cells-event
+                         space (nb/cell-op (nb/cells-of (sub/object st space)) body)))
+        {:state (state-payload st) :notebook (notebook-payload st space)})))
 
 ;; ---- writes (every one a substrate event) ----
 (defn edit! [st id value]
@@ -419,6 +468,28 @@
       {:state (state-payload st) :openId (or tid fid)})
     (catch Exception e {:error (.getMessage e)})))
 
+;; deep-dive: the agent proposes subtopics (grounded in the hub's findings AND
+;; recalled memory), each spawned as a connected notebook and researched.
+(defn deep-dive! [st space]
+  (try
+    (let [sp     (sub/object st space)
+          digest (str (->> (nb/cells-of sp) (keep #(sub/object st (:ref %)))
+                           (map obj-digest) (str/join "\n"))
+                      (remembered-context (str (:title sp) " " (get-in sp [:value :intent]))))
+          subs*  (take 3 (agent/propose-subtopics (:title sp) (get-in sp [:value :intent]) digest))
+          spawned
+          (vec (for [{:keys [title intent query]} subs*]
+                 (let [n   (count (nb/notebooks st))
+                       sid (str "space:dd-" (inc n))]
+                   (sub/commit! st {:op :put :id sid
+                                    :value {:id sid :kind :space :title title
+                                            :value {:intent intent :cells []
+                                                    :spawned-by {:space space :prompt query}}}})
+                   (research! st sid query)
+                   sid)))]
+      {:state (state-payload st) :spawned spawned})
+    (catch Exception e {:error (.getMessage e)})))
+
 ;; ---- routing ----
 (defn handler [{:keys [uri query-string] :as req}]
   (let [st (store)
@@ -428,7 +499,7 @@
                               :body (slurp (io/resource "public/index.html"))}
       (= uri "/api/state")   (json-resp (state-payload st))
       (= uri "/api/mold")    (json-resp (mold-payload st (params "id") (params "view")))
-      (= uri "/api/leap")    (json-resp (leap-payload st (params "q")))
+      (= uri "/api/leap")    (json-resp (leap-payload st @mem/memory (params "q")))
       (= uri "/api/undo")    (do (sub/undo! st) (json-resp (state-payload st)))
       (= uri "/api/edit")    (let [{:keys [id value]} (body-json req)] (json-resp (edit! st id value)))
       (= uri "/api/delegate")(let [{:keys [space]} (body-json req)] (json-resp (delegate! st space)))
@@ -439,6 +510,15 @@
       (= uri "/api/ask")     (let [{:keys [prompt space]} (body-json req)] (json-resp (ask! st prompt space)))
       (= uri "/api/keep-note")(let [{:keys [space title text]} (body-json req)] (json-resp (keep-note! st space title text)))
       (= uri "/api/import-csv")(let [{:keys [title csv space]} (body-json req)] (json-resp (import-csv! st title csv space)))
+      (= uri "/api/notebook")(if (= :post (:request-method req))
+                               (json-resp (notebook-op! st (body-json req)))
+                               (json-resp (notebook-payload st (params "id"))))
+      (= uri "/api/links")   (json-resp (nb/links st (params "space")))
+      (= uri "/api/memory")  (json-resp {:facts (let [qq (params "q")]
+                                                  (if (seq qq)
+                                                    (mold/recall @mem/memory qq {:k 20})
+                                                    (mem/all-facts @mem/memory)))})
+      (= uri "/api/deep-dive")(json-resp (deep-dive! st (:space (body-json req))))
       (str/starts-with? uri "/api/object/")
       (json-resp (mold-payload st (java.net.URLDecoder/decode (subs uri (count "/api/object/")) "UTF-8") nil))
       :else {:status 404 :headers {"Content-Type" "text/plain"} :body "not found"})))

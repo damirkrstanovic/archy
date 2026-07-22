@@ -16,7 +16,11 @@
             [loci.mold :as mold]
             [loci.substrate :as sub]))
 
-(defn- tokens [s] (set (re-seq #"[a-z0-9][a-z0-9.%-]*" (str/lower-case (str s)))))
+;; a trailing "." on a token is sentence punctuation, not part of the word —
+;; the middle-dot form (e.g. "4.2", "22%") stays intact since [.%-] must be
+;; followed by another alnum to extend the match; only a dangling separator
+;; at the very end (a sentence-final period) is excluded.
+(defn- tokens [s] (set (re-seq #"[a-z0-9]+(?:[.%-][a-z0-9]+)*%?" (str/lower-case (str s)))))
 
 (defn- jaccard [a b]
   (if (or (empty? a) (empty? b))
