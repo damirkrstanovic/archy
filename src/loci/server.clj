@@ -150,8 +150,10 @@
 
 ;; ---- writes (every one a substrate event) ----
 (defn edit! [st id value]
-  (sub/commit! st {:op :assoc :id id :path [:value] :value value})
-  {:state (state-payload st) :object (mold-payload st id nil)})
+  (if-not (and id (sub/object st id))
+    {:error (str "no such object: " id)}
+    (do (sub/commit! st {:op :assoc :id id :path [:value] :value value})
+        {:state (state-payload st) :object (mold-payload st id nil)})))
 
 ;; (1) molding-by-description — the agent emits a view-spec stored as a
 ;; reversible object; it then appears in the object's "view this as…" menu.
@@ -379,10 +381,21 @@
       {:state (state-payload st) :openId nid})
     (catch Exception e {:error (.getMessage e)})))
 
+(defn- next-id
+  "Mint '<prefix>N' with N = 1 + the highest existing numeric suffix across the
+   WHOLE store. Counting a notebook's refs collides after a cell remove — a
+   removed ref lowers the count while the object lives on."
+  [st prefix]
+  (let [n (->> (keys (sub/objects st))
+               (keep #(when (str/starts-with? % prefix)
+                        (try (Long/parseLong (subs % (count prefix)))
+                             (catch Exception _ nil))))
+               (reduce max 0))]
+    (str prefix (inc n))))
+
 (defn keep-note! [st space title text]
   (let [sp  (sub/object st space)
-        n   (count (filter #(str/starts-with? % "note:") (nb/refs-of sp)))
-        nid (str "note:" (subs space (inc (str/index-of space ":"))) "-" (inc n))]
+        nid (next-id st (str "note:" (subs space (inc (str/index-of space ":"))) "-"))]
     (sub/commit! st {:op :tx :events [{:op :put :id nid :value {:id nid :kind :doc :title title :value text}}
                                       (nb/append-cell-event st space {:ref nid})]})
     {:state (state-payload st) :openId nid}))
@@ -411,8 +424,7 @@
                                      {:role "user" :content "Write the brief now."}]
                                     tools/specs tool-fn)
                   (catch Exception e (str "# Draft for " (:title sp) "\n\n_(agent unavailable: " (.getMessage e) ")_")))
-        dn (count (filter #(str/starts-with? % "draft:") (nb/refs-of sp)))
-        did (str "draft:" (subs space (inc (str/index-of space ":"))) "-" (inc dn))
+        did (next-id st (str "draft:" (subs space (inc (str/index-of space ":"))) "-"))
         draft {:id did :kind :doc :title (str "Draft — " (:title sp)) :value text}]
     (sub/commit! st {:op :tx :events [{:op :put :id did :value draft}
                                       (nb/append-cell-event st space {:ref did})]})
@@ -462,8 +474,7 @@
                                  tools/specs tf)
           tid (first @saved)
           sp (sub/object st space)
-          n (count (filter #(str/starts-with? % "find:") (nb/refs-of sp)))
-          fid (str "find:" (subs space (inc (str/index-of space ":"))) "-" (inc n))
+          fid (next-id st (str "find:" (subs space (inc (str/index-of space ":"))) "-"))
           p (str/trim prompt)
           title (str "Findings — " (if (> (count p) 44) (str (subs p 0 44) "…") p))]
       (sub/commit! st {:op :tx :events [{:op :put :id fid :value {:id fid :kind :doc :title title :value text}}

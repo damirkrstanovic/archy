@@ -38,3 +38,25 @@
     (srv/notebook-op! st {:space "space:n" :op "add-text" :text "hi"})
     (is (= 3 (count (sub/history st))))
     (is (= [{:text "hi"}] (get-in (sub/object st "space:n") [:value :cells])))))
+
+(deftest edit-rejects-missing-id
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "doc:a" :value {:id "doc:a" :kind :doc :title "A" :value "x"}})
+    (is (:error (srv/edit! st nil "v")))
+    (is (:error (srv/edit! st "nope" "v")))
+    (is (= 1 (count (sub/history st))))          ; nothing committed
+    (is (nil? (:error (srv/edit! st "doc:a" "y"))))
+    (is (= "y" (:value (sub/object st "doc:a"))))))
+
+(deftest note-ids-survive-cell-removal
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "space:n" :value {:id "space:n" :kind :space :title "N" :value {:cells []}}})
+    (srv/keep-note! st "space:n" "one" "1")
+    (srv/keep-note! st "space:n" "two" "2")
+    (srv/keep-note! st "space:n" "three" "3")
+    ;; remove the MIDDLE note's cell (idx 1) — note:n-2's object lives on
+    (srv/notebook-op! st {:space "space:n" :op "remove" :idx 1})
+    (srv/keep-note! st "space:n" "four" "4")
+    ;; the new note must NOT reuse an existing id
+    (is (= "3" (:value (sub/object st "note:n-3"))))   ; old note untouched
+    (is (= "4" (:value (sub/object st "note:n-4"))))))  ; new note got a fresh id
