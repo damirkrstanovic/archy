@@ -88,6 +88,13 @@
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);z-index:80;background:var(--ink);color:var(--paper);font-size:12.5px;padding:9px 15px;border-radius:999px;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;display:flex;gap:10px;align-items:center}
   .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   .toast .u{color:var(--accent-line);cursor:pointer;pointer-events:auto;font-weight:500}
+  .timebar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:75;display:none;align-items:center;gap:12px;
+           background:var(--white);border:1px solid var(--accent-line);border-radius:999px;padding:8px 16px;box-shadow:0 20px 50px -30px rgba(20,30,25,.5);width:min(720px,92vw)}
+  .timebar.on{display:flex}
+  .timebar input[type=range]{flex:1}
+  .timelabel{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;max-width:40%;overflow:hidden;text-overflow:ellipsis}
+  .world.timemode .actions,.world.timemode .cellbar,.world.timemode .addrow,
+  .world.timemode .mkcell,.world.timemode select[data-remold]{display:none!important}
   .modal{position:fixed;inset:0;z-index:70;background:rgba(20,28,24,.28);backdrop-filter:blur(2px);display:none;align-items:flex-start;justify-content:center;padding-top:92px}
   .modal.on{display:flex}
   .modalcard{width:100%;max-width:620px;max-height:76vh;display:flex;flex-direction:column;background:var(--white);border:1px solid var(--line);border-radius:14px;box-shadow:0 40px 80px -40px rgba(20,30,25,.6)}
@@ -143,6 +150,7 @@
   <div class="ambient" id="ambient"></div>
   <button class="undoBtn" id="memBtn" title="what the agent remembers — distilled facts with provenance">⌾ memory</button>
   <button class="undoBtn" id="fnBtn" title="peek at the functions in this substrate (for the curious — not the everyday flow)">ƒ functions</button>
+  <button class="undoBtn" id="timeBtn" title="scrub the substrate's history — view any past moment, read-only">⏱ time</button>
   <button class="undoBtn" id="undoBtn" title="revert the last substrate event">↺ undo</button>
 </div>
 
@@ -155,14 +163,19 @@
 
 <div class="world" id="world"></div>
 <div class="toast" id="toast"></div>
+<div class="timebar" id="timebar">
+  <button class="btn ghost sm" id="timeNow">↩ now</button>
+  <input type="range" id="timeRange" min="0" max="0" value="0">
+  <div class="timelabel" id="timeLabel">—</div>
+</div>
 <div class="modal" id="modal"></div>
 
 <script>
 const POST = (url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
 const API = {
-  state: () => fetch('/api/state').then(r=>r.json()),
-  object: id => fetch('/api/object/'+encodeURIComponent(id)).then(r=>r.json()),
-  mold: (id,view) => fetch('/api/mold?id='+encodeURIComponent(id)+'&view='+encodeURIComponent(view)).then(r=>r.json()),
+  state: at => fetch('/api/state'+(at!=null?'?at='+at:'')).then(r=>r.json()),
+  object: (id,at) => fetch('/api/object/'+encodeURIComponent(id)+(at!=null?'?at='+at:'')).then(r=>r.json()),
+  mold: (id,view,at) => fetch('/api/mold?id='+encodeURIComponent(id)+'&view='+encodeURIComponent(view)+(at!=null?'&at='+at:'')).then(r=>r.json()),
   leap: q => fetch('/api/leap?q='+encodeURIComponent(q)).then(r=>r.json()),
   undo: () => fetch('/api/undo').then(r=>r.json()),
   edit: (id,value) => POST('/api/edit',{id,value}),
@@ -174,7 +187,8 @@ const API = {
   keepNote: (space,title,text) => POST('/api/keep-note',{space,title,text}),
   importCsv: (title,csv,space) => POST('/api/import-csv',{title,csv,space}),
   research: (space,prompt) => POST('/api/research',{space,prompt}),
-  notebook: id => fetch('/api/notebook?id='+encodeURIComponent(id)).then(r=>r.json()),
+  notebook: (id,at) => fetch('/api/notebook?id='+encodeURIComponent(id)+(at!=null?'&at='+at:'')).then(r=>r.json()),
+  events: () => fetch('/api/events').then(r=>r.json()),
   notebookOp: body => POST('/api/notebook', body),
   memory: q => fetch('/api/memory'+(q?'?q='+encodeURIComponent(q):'')).then(r=>r.json()),
   deepDive: space => POST('/api/deep-dive',{space}),
@@ -187,6 +201,8 @@ const API = {
 let STATE={spaces:[],objects:{}};
 let panels=[], mode='focus', focusIdx=0, openId=null;
 let filtered=[], sel=0;
+let TIME=null;   // {n,total,events} while scrubbing, else null
+const tat=()=>TIME?TIME.n:undefined;
 
 const world=document.getElementById('world');
 const cmd=document.getElementById('cmd'), q=document.getElementById('q'), results=document.getElementById('results');
@@ -233,7 +249,7 @@ async function undo(){
   applyState(s); if(gone) openId=null;
   rebuild(); if(openId) openObject(openId);
 }
-document.getElementById('undoBtn').addEventListener('click',()=>{ undo(); showToast('Reverted last event'); });
+document.getElementById('undoBtn').addEventListener('click',()=>{ if(TIME){ showToast('you\'re viewing the past — ↩ now to edit'); return; } undo(); showToast('Reverted last event'); });
 
 // long agent flows run server-side as jobs; we poll instead of holding a fetch
 // open for minutes (browsers kill those — the old "refresh to see it" bug).
@@ -248,6 +264,7 @@ function pollJob(id,onDone){
 // a job can finish while the user is typing somewhere — don't yank the DOM out
 // from under them; wait until no input is focused (LEAP box excepted).
 function safeRebuild(){
+  if(TIME){ setTimeout(safeRebuild,4000); return; }   // never yank the user out of the past
   const ae=document.activeElement;
   if(ae&&ae!==q&&(ae.tagName==='INPUT'||ae.tagName==='TEXTAREA')){ setTimeout(safeRebuild,4000); return; }
   rebuild(); if(openId) openObject(openId);
@@ -278,6 +295,7 @@ function renderBody(i){
 }
 
 async function cellOp(i,body){
+  if(TIME){ showToast('you\'re viewing the past — ↩ now to edit'); return; }
   const sp=STATE.spaces[i], before=STATE.events;
   const res=await API.notebookOp(Object.assign({space:sp.id},body));
   if(res.error){ showToast(res.error); return; }
@@ -304,7 +322,7 @@ function editProse(i,idx,text){
 async function renderNotebook(i){
   const sp=STATE.spaces[i], b=document.getElementById('body'+i);
   b.innerHTML='<div class="sec-h">loading notebook…</div>';
-  const nb=await API.notebook(sp.id);
+  const nb=await API.notebook(sp.id,tat());
   if(mode!=='focus'||i!==focusIdx||openId) return;   // panel moved on while we fetched
   if(nb.error){ b.innerHTML='<div style="color:var(--attn);font-size:13px">'+esc(nb.error)+'</div>'; return; }
   let cellsH='';
@@ -463,10 +481,10 @@ async function openObject(id){
   const owner=STATE.spaces.findIndex(s=>s.members.includes(id));
   if(owner>=0 && (mode!=='focus' || focusIdx!==owner)){ focusIdx=owner; }
   mode='focus'; closeLeap();
-  const m=await API.object(id);
+  const m=await API.object(id,tat());
   renderDetail(focusIdx,m); layout();
 }
-async function remold(id,view){ const m=await API.mold(id,view); renderDetail(focusIdx,m); }
+async function remold(id,view){ const m=await API.mold(id,view,tat()); renderDetail(focusIdx,m); }
 
 function renderDetail(i,m){
   const b=document.getElementById('body'+i);
@@ -703,6 +721,46 @@ function overview(){ mode='overview'; openId=null; closeLeap(); layout(); }
 crumb.addEventListener('click',()=>mode==='focus'?overview():enter(focusIdx));
 addEventListener('resize',layout);
 
+// ---------------- time scrubber (the record, never the recall) ----------------
+const timebar=document.getElementById('timebar'), timeRange=document.getElementById('timeRange'),
+      timeLabel=document.getElementById('timeLabel');
+let timeDeb;
+async function enterTime(){
+  const ev=await API.events();
+  TIME={n:ev.total,total:ev.total,events:ev.events};
+  timeRange.min=0; timeRange.max=ev.total; timeRange.value=ev.total;
+  timebar.classList.add('on'); overview(); paintTime();
+}
+function timeCaption(){
+  if(!TIME) return '—';
+  if(TIME.n>=TIME.total) return 'now · '+TIME.total+' events';
+  const e=TIME.events[TIME.n-1];
+  return TIME.n===0 ? 'the beginning — before the first event'
+       : 'event '+TIME.n+'/'+TIME.total+' · '+(e?e.label:'')+(e&&e.ts?' · '+new Date(e.ts).toLocaleString():'');
+}
+function paintTime(){
+  timeLabel.textContent=timeCaption();
+  world.classList.toggle('timemode', !!TIME && TIME.n<TIME.total);
+}
+async function scrubTo(n){
+  TIME.n=n; paintTime();
+  clearTimeout(timeDeb);
+  timeDeb=setTimeout(async()=>{
+    if(!TIME) return;
+    const want=TIME.n;
+    const s=await API.state(want<TIME.total?want:undefined);
+    if(!TIME||TIME.n!==want) return;                       // stale response
+    applyState(s); mode='overview'; openId=null; rebuild();
+  },120);
+}
+async function exitTime(){
+  TIME=null; timebar.classList.remove('on'); world.classList.remove('timemode');
+  applyState(await API.state()); rebuild();
+}
+document.getElementById('timeBtn').addEventListener('click',()=>TIME?exitTime():enterTime());
+document.getElementById('timeNow').addEventListener('click',exitTime);
+timeRange.addEventListener('input',()=>scrubTo(+timeRange.value));
+
 // ---------------- LEAP ----------------
 async function renderLeap(){
   const qv=q.value.trim();
@@ -847,7 +905,8 @@ addEventListener('keydown',e=>{
   if(document.activeElement===q) return;
   // don't steal typing from any focused field (code-a-view, describe, edit, …)
   { const a=document.activeElement, t=a&&a.tagName; if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT'||(a&&a.isContentEditable)){ if(e.key==='Escape')a.blur(); return; } }
-  if(e.key==='Escape'){ if(openId){openId=null;renderBody(focusIdx);} else if(mode==='focus') overview(); return; }
+  if(e.key==='Escape'){ if(TIME){ exitTime(); return; } if(openId){openId=null;renderBody(focusIdx);} else if(mode==='focus') overview(); return; }
+  if(TIME) return;   // LEAP is disabled while viewing the past
   if(e.key.length===1 && !e.metaKey && !e.ctrlKey && !e.altKey) q.focus();
 });
 
