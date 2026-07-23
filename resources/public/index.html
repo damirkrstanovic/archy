@@ -508,11 +508,13 @@ async function openFnPalette(i, id, anchor){
   document.querySelectorAll('.fnpal').forEach(el=>el.remove());   // one palette at a time
   let res; try{ res=await API.fns(id); }catch(e){ showToast('palette: network error'); return; }
   if(res.error){ showToast(res.error); return; }
+  if(!anchor.isConnected) return;   // notebook re-rendered mid-fetch — don't land in a detached subtree
   const host=document.createElement('div'); host.className='fnpal';
   host.innerHTML='<div class="sec-h" style="margin-top:0">ƒ apply a function <button class="mkcell" style="float:right" data-x="close">✕</button></div>'+
     '<div class="fnchips">'+res.fns.map((f,k)=>
       '<button class="fnchip'+(f.ok?'':' dis')+'" data-k="'+k+'" title="'+esc(f.ok?(f.doc||''):f.why)+'">'+esc(f.label)+'</button>').join('')+'</div>'+
     '<div class="fnbody"></div>';
+  document.querySelectorAll('.fnpal').forEach(el=>el.remove());   // again — a second ƒ click may have raced the fetch
   anchor.insertAdjacentElement('afterend', host);
   host.querySelector('[data-x="close"]').addEventListener('click',()=>host.remove());
   const body=host.querySelector('.fnbody');
@@ -531,9 +533,12 @@ async function openFnPalette(i, id, anchor){
       '<button class="btn sm" data-a="ap">Apply</button></div><div class="fnprev"></div>';
     const collect=()=>{ const ps={}; body.querySelectorAll('[data-p]').forEach(el=>ps[el.dataset.p]=el.value); return ps; };
     const prev=body.querySelector('.fnprev');
+    let pvSeq=0;   // in-flight previews can resolve out of order — only the latest may write
     const preview=async()=>{
       prev.innerHTML='<div style="color:var(--muted);font-size:12px">previewing…</div>';
-      let r; try{ r=await API.fnPreview(id,f.id,collect()); }catch(e){ prev.innerHTML=''; showToast('preview: network error'); return; }
+      const tok=++pvSeq;
+      let r; try{ r=await API.fnPreview(id,f.id,collect()); }catch(e){ if(tok!==pvSeq) return; prev.innerHTML=''; showToast('preview: network error'); return; }
+      if(tok!==pvSeq) return;
       if(r.error){ prev.innerHTML='<div style="color:var(--attn);font-size:12px">'+esc(r.error)+'</div>'; return; }
       prev.innerHTML='<div class="fnba"><div><div class="sec-h">before</div>'+tableHTML(r.before)+'</div>'+
         '<div class="fnarrow">→</div><div><div class="sec-h">after · '+r.count+' rows</div>'+tableHTML(r.after)+'</div></div>'+
