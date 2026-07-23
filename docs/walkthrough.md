@@ -36,3 +36,11 @@ Tap any key → LEAP. Type `churn`: notebooks, tables, docs, notebook prose,
 document bodies and memory facts, in one incremental list. Enter jumps —
 a prose hit opens its notebook, a memory hit opens the memory pane.
 One gesture; the whole substrate answers.
+
+## 5 · Scrub time (offline)
+Hit **⏱ time**. Drag the scrubber: the whole workspace reconstructs itself at
+any past event — before the import, before the deep-dive, before everything.
+Focus a notebook to read it as it was; nothing is editable in the past. This
+is the same event log undo walks — time made visible. **↩ now** (or esc)
+returns to the present. The ⌾ memory pane stays live: the scrubber travels
+the record, never the recall.

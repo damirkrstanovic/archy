@@ -64,6 +64,8 @@ frontend only lays out the result.
 | `GET /api/fns?id=` | the ƒ palette for a table: built-in verbs + agent-written functions |
 | `POST /api/fn-preview` | run a function over the live rows — before/after, commits nothing |
 | `POST /api/fn-apply` | keep the result: derived table + cell, ONE reversible event, `from`/`via` provenance |
+| `GET /api/events` | the log, humanely labeled — feeds the ⏱ scrubber |
+| any read + `?at=N` | the same payload as-of event N — read-only time travel |
 
 ## Layout
 
