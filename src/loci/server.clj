@@ -50,22 +50,23 @@
     (sub/frozen-at st (-> n (max 0) (min (count (sub/history st)))))
     st))
 
-(defn- title-of [st id] (or (:title (sub/object st id)) id "object"))
+(defn- title-of [objs id] (or (:title (get objs id)) id "object"))
 
-(defn- event-label [st {:keys [op id events]}]
+(defn- event-label [objs {:keys [op id events]}]
   (case op
-    :put    (str "＋ " (title-of st id))
-    :assoc  (str "✎ " (title-of st id))
+    :put    (str "＋ " (title-of objs id))
+    :assoc  (str "✎ " (title-of objs id))
     :delete (str "✕ " (or id "object"))
-    :tx     (str (event-label st (first events))
+    :tx     (str (event-label objs (first events))
                  (when (> (count events) 1) (str " (+" (dec (count events)) ")")))
     (name (or op :event))))
 
 (defn events-payload [st]
-  (let [evs (sub/history st)]
+  (let [evs  (sub/history st)
+        objs (sub/objects st)]   ; materialize ONCE — labeling is O(n), not O(n²)
     {:total (count evs)
      :events (vec (map-indexed (fn [i ev] {:i (inc i) :op (name (or (:op ev) :event))
-                                           :ts (:ts ev) :label (event-label st ev)})
+                                           :ts (:ts ev) :label (event-label objs ev)})
                                evs))}))
 
 ;; ---- payloads ----
