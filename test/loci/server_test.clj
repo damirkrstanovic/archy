@@ -116,3 +116,51 @@
     ;; the new note must NOT reuse an existing id
     (is (= "3" (:value (sub/object st "note:n-3"))))   ; old note untouched
     (is (= "4" (:value (sub/object st "note:n-4"))))))  ; new note got a fresh id
+
+(def ^:private trows [{:region "EMEA" :revenue 100} {:region "APAC" :revenue 250}])
+
+(defn- store-with-table []
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "tbl:t" :value {:id "tbl:t" :kind :table :title "T" :value trows}})
+    (sub/commit! st {:op :put :id "space:n" :value {:id "space:n" :kind :space :title "N" :value {:intent "i" :cells []}}})
+    st))
+
+(deftest fns-payload-lists-builtins-and-agent-fns
+  (let [st (store-with-table)]
+    (is (:error (srv/fns-payload st "space:n")))          ; not a table
+    (sub/commit! st {:op :put :id "fn:t-1"
+                     :value {:id "fn:t-1" :kind :fn :title "fn: double it"
+                             :value {:lang "clojure" :code "(fn [rows] (mapv #(update % :revenue * 2) rows))"}}})
+    (let [ids (set (map :id (:fns (srv/fns-payload st "tbl:t"))))]
+      (is (contains? ids "lib:filter"))
+      (is (contains? ids "fn:t-1")))))
+
+(deftest fn-preview-commits-nothing
+  (let [st (store-with-table)
+        before (count (sub/history st))
+        r (srv/fn-preview st "tbl:t" "lib:top" {:by "revenue" :n "1" :order "desc"})]
+    (is (= [{:region "APAC" :revenue 250}] (:after r)))
+    (is (= 2 (count (:before r))))
+    (is (= 1 (:count r)))
+    (is (= before (count (sub/history st))))))            ; preview is FREE
+
+(deftest fn-apply-commits-one-tx-with-provenance
+  (let [st (store-with-table)
+        before (count (sub/history st))
+        r (srv/fn-apply! st "tbl:t" "lib:top" {:by "revenue" :n "1" :order "desc"} "space:n")
+        nid (:openId r)
+        t (sub/object st nid)]
+    (is (= (inc before) (count (sub/history st))))        ; ONE event (a :tx)
+    (is (= "tbl:t" (:from t)))
+    (is (= "lib:top" (:via t)))
+    (is (some #(= nid (:ref %)) (get-in (sub/object st "space:n") [:value :cells])))
+    (sub/undo! st)                                        ; one undo reverts table AND cell
+    (is (nil? (sub/object st nid)))))
+
+(deftest fn-apply-runs-agent-written-sci-fns
+  (let [st (store-with-table)]
+    (sub/commit! st {:op :put :id "fn:t-1"
+                     :value {:id "fn:t-1" :kind :fn :title "fn: double it"
+                             :value {:lang "clojure" :code "(fn [rows] (mapv #(update % :revenue * 2) rows))"}}})
+    (let [r (srv/fn-apply! st "tbl:t" "fn:t-1" {} nil)]
+      (is (= [200 500] (map :revenue (:value (sub/object st (:openId r)))))))))

@@ -12,6 +12,7 @@
             [org.httpkit.server :as http]
             [loci.agent :as agent]
             [loci.content :as c]
+            [loci.fnlib :as fnlib]
             [loci.memory :as mem]
             [loci.mold :as mold]
             [loci.notebook :as nb]
@@ -244,6 +245,66 @@
                       :code (or (get-in o [:value :code])
                                 (when (= :viewspec (:kind o))
                                   (pr-str (get-in o [:value :spec]))))}))))
+
+;; ---- the function palette: built-in single-table verbs (loci.fnlib) plus
+;; agent-written :fn objects, previewed live, applied as ONE reversible :tx ----
+(declare next-id)
+
+(defn- table-rows [st id]
+  (let [rows (:value (sub/object st id))]
+    (when (and (sequential? rows) (seq rows) (every? map? rows)) rows)))
+
+(defn fns-payload [st id]
+  (if-let [rows (table-rows st id)]
+    {:fns (into (fnlib/catalog rows)
+                (->> (sub/objects st) vals
+                     (filter #(and (= :fn (:kind %)) (= "clojure" (get-in % [:value :lang]))))
+                     (sort-by :id)
+                     (mapv (fn [o] {:id (:id o) :label (:title o)
+                                    :doc (get-in o [:value :prompt]) :ok true :params []}))))}
+    {:error "functions work on tables"}))
+
+(defn- run-any-fn [st fid rows params]
+  (if (str/starts-with? fid "fn:")
+    (let [o (sub/object st fid)]
+      (if-not (= :fn (:kind o))
+        {:error (str "unknown function: " fid)}
+        (try
+          (let [res (sci/eval-string (get-in o [:value :code])
+                                     (assoc sci-opts :bindings {'rows (vec rows)}))
+                out (json-safe (vec (if (fn? res) (res (vec rows)) res)))]
+            (if (and (seq out) (every? map? out))
+              {:rows out}
+              {:error "the function did not return rows"}))
+          (catch Exception e {:error (.getMessage e)}))))
+    (let [r (fnlib/run-fn fid rows params)]
+      (if (:error r) r {:rows (json-safe (:rows r))}))))
+
+(defn fn-preview [st id fid params]
+  (if-let [rows (table-rows st id)]
+    (let [r (run-any-fn st fid rows params)]
+      (if (:error r)
+        r
+        {:before (vec (take 8 rows)) :after (vec (take 8 (:rows r))) :count (count (:rows r))}))
+    {:error "functions work on tables"}))
+
+(defn fn-apply! [st id fid params space]
+  (if-let [rows (table-rows st id)]
+    (let [r (run-any-fn st fid rows params)]
+      (if (:error r)
+        r
+        (let [src (sub/object st id)
+              lbl (or (:label (first (filter #(= fid (:id %)) fnlib/builtins)))
+                      (:title (sub/object st fid)) fid)
+              nid (next-id st "tbl:derived-")
+              tobj {:id nid :kind :table :title (str (:title src) " · " lbl)
+                    :value (:rows r) :from id :via fid}
+              evs (cond-> [{:op :put :id nid :value tobj}]
+                    (and space (sub/object st space))
+                    (conj (nb/append-cell-event st space {:ref nid})))]
+          (sub/commit! st {:op :tx :events evs})
+          {:state (state-payload st) :openId nid})))
+    {:error "functions work on tables"}))
 
 ;; ONE verb over a table: the user says what they want, the agent picks the
 ;; simplest mechanism (declarative view-spec / browser applet / server-side
@@ -558,6 +619,11 @@
       (= uri "/api/job")     (json-resp (job-status (params "id")))
       (= uri "/api/do")      (let [{:keys [id prompt space]} (body-json req)] (json-resp (do! st id prompt space)))
       (= uri "/api/functions")(json-resp (functions-list st))
+      (= uri "/api/fns")       (json-resp (fns-payload st (params "id")))
+      (= uri "/api/fn-preview")(let [{:keys [id fnid params]} (body-json req)]
+                                 (json-resp (fn-preview st id fnid params)))
+      (= uri "/api/fn-apply")  (let [{:keys [id fnid params space]} (body-json req)]
+                                 (json-resp (fn-apply! st id fnid params space)))
       (= uri "/api/new-space")(let [{:keys [prompt]} (body-json req)] (json-resp (new-space! st prompt)))
       (= uri "/api/ask")     (let [{:keys [prompt space]} (body-json req)] (json-resp (ask! st prompt space)))
       (= uri "/api/keep-note")(let [{:keys [space title text]} (body-json req)] (json-resp (keep-note! st space title text)))
