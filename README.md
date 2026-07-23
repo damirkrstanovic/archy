@@ -58,7 +58,12 @@ frontend only lays out the result.
 | `GET/POST /api/notebook` | a notebook's hydrated cells / one cell operation |
 | `GET /api/links?space=` | computed connectedness (shares / spawned / lineage) |
 | `GET /api/memory?q=` | the agent's memory — browsable, recall-ranked |
-| `POST /api/deep-dive` | spawn + research connected sub-notebooks |
+| `POST /api/research` | agent research as a background job — returns a job id |
+| `POST /api/deep-dive` | spawn + research connected sub-notebooks (background job) |
+| `GET /api/job?id=` | poll a background agent job — the shell never holds a long fetch |
+| `GET /api/fns?id=` | the ƒ palette for a table: built-in verbs + agent-written functions |
+| `POST /api/fn-preview` | run a function over the live rows — before/after, commits nothing |
+| `POST /api/fn-apply` | keep the result: derived table + cell, ONE reversible event, `from`/`via` provenance |
 
 ## Layout
 
@@ -66,6 +71,7 @@ frontend only lays out the result.
 src/loci/substrate.clj   layer 1: append-only event log behind a Store protocol
 src/loci/content.clj     layer 2: populated content + viewers; datafy/nav
 src/loci/mold.clj        layer 4: viewer registry, mold, Recall protocol (UI-free)
+src/loci/fnlib.clj       built-in single-table transforms — the ƒ function palette (UI-free)
 src/loci/memory.clj      layer 3: AI-memory engine (Recall protocol, persisted)
 src/loci/notebook.clj    notebook = space: cells, cell ops, computed links
 src/loci/server.clj      layer 5 backend: substrate + mold served as JSON

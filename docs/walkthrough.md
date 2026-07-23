@@ -23,7 +23,9 @@ any other), and lands a findings note — both as new cells. Then open **⌾ mem
 the distilled facts are there, each citing the object it came from.
 
 ## 3 · Connected deep-dives (agent)
-On the hub, hit **⌘ Deep-dive**. The agent proposes 2-3 subtopics (informed by
+On the hub, hit **⌘ Deep-dive**. It runs in the background — keep working,
+the notebooks land when ready (and cluster under their hub in the overview).
+The agent proposes 2-3 subtopics (informed by
 what it now REMEMBERS from flow 2 — watch for ⌾ citations), spawns a connected
 notebook per subtopic and researches each. The hub grows a **connected** rail;
 shared tables show **also in** chips; derived tables show their lineage.
