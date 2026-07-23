@@ -203,17 +203,31 @@
 (def ^:private sci-opts {:classes {'Math java.lang.Math}})
 (defn- json-safe [rows] (walk/postwalk #(if (ratio? %) (double %) %) rows))
 
+;; only a real :space may receive a cell append — an existence check alone lets
+;; a table id through, and the :assoc on its vector :value poisons the log
+(defn- space? [st id] (= :space (:kind (sub/object st id))))
+
+(defn- run-clj-rows
+  "Eval agent-written Clojure over rows in the SCI sandbox — accepts
+   `(fn [rows] …)` or a bare expression over `rows`. Returns {:rows out}
+   or {:error …}; throws on eval errors, callers keep their own try."
+  [code rows]
+  (let [res (sci/eval-string code (assoc sci-opts :bindings {'rows (vec rows)}))
+        out (json-safe (vec (if (fn? res) (res (vec rows)) res)))]
+    (if (and (seq out) (every? map? out))
+      {:rows out}
+      {:error "the function did not return rows"})))
+
 (defn compute-clj! [st id prompt space]
   (try
     (let [o (sub/object st id) rows (:value o)]
       (if-not (and (sequential? rows) (seq rows) (every? map? rows))
         {:error "compute works on tables"}
         (let [code (agent/make-clj-transform (mapv name (keys (first rows))) (take 3 rows) prompt)
-              ;; accept either `(fn [rows] …)` or a bare expression over `rows`
-              res  (sci/eval-string code (assoc sci-opts :bindings {'rows (vec rows)}))
-              out  (json-safe (vec (if (fn? res) (res (vec rows)) res)))]
-          (if-not (and (seq out) (every? map? out))
-            {:error "the function did not return rows"}
+              r    (run-clj-rows code rows)
+              out  (:rows r)]
+          (if (:error r)
+            r
             (let [nf (count (filter #(= :fn (:kind %)) (vals (sub/objects st))))
                   nt (count (filter #(= :table (:kind %)) (vals (sub/objects st))))
                   p  (str/trim prompt)
@@ -225,7 +239,7 @@
                   tobj {:id nid :kind :table :title ttl :value out :from id :via fid}
                   evs (cond-> [{:op :put :id fid :value fobj}
                                {:op :put :id nid :value tobj}]
-                        (and space (sub/object st space))
+                        (and space (space? st space))
                         (conj (nb/append-cell-event st space {:ref nid})))]
               (sub/commit! st {:op :tx :events evs})
               {:state (state-payload st) :openId nid :object (mold-payload st nid nil)})))))
@@ -265,46 +279,55 @@
     {:error "functions work on tables"}))
 
 (defn- run-any-fn [st fid rows params]
-  (if (str/starts-with? fid "fn:")
+  (cond
+    (nil? fid)
+    {:error "which function?"}
+
+    (str/starts-with? fid "fn:")
     (let [o (sub/object st fid)]
-      (if-not (= :fn (:kind o))
-        {:error (str "unknown function: " fid)}
-        (try
-          (let [res (sci/eval-string (get-in o [:value :code])
-                                     (assoc sci-opts :bindings {'rows (vec rows)}))
-                out (json-safe (vec (if (fn? res) (res (vec rows)) res)))]
-            (if (and (seq out) (every? map? out))
-              {:rows out}
-              {:error "the function did not return rows"}))
-          (catch Exception e {:error (.getMessage e)}))))
+      (cond
+        (not= :fn (:kind o)) {:error (str "unknown function: " fid)}
+        (not= "clojure" (get-in o [:value :lang])) {:error "not a runnable function"}
+        :else (try
+                (run-clj-rows (get-in o [:value :code]) rows)
+                (catch Exception e {:error (.getMessage e)}))))
+
+    :else
     (let [r (fnlib/run-fn fid rows params)]
       (if (:error r) r {:rows (json-safe (:rows r))}))))
 
 (defn fn-preview [st id fid params]
-  (if-let [rows (table-rows st id)]
-    (let [r (run-any-fn st fid rows params)]
-      (if (:error r)
-        r
-        {:before (vec (take 8 rows)) :after (vec (take 8 (:rows r))) :count (count (:rows r))}))
-    {:error "functions work on tables"}))
+  (try
+    (if-let [rows (table-rows st id)]
+      (let [r (run-any-fn st fid rows params)]
+        (if (:error r)
+          r
+          {:before (json-safe (vec (take 8 rows)))
+           :after (vec (take 8 (:rows r))) :count (count (:rows r))}))
+      {:error "functions work on tables"})
+    (catch Exception e {:error (.getMessage e)})))
 
 (defn fn-apply! [st id fid params space]
-  (if-let [rows (table-rows st id)]
-    (let [r (run-any-fn st fid rows params)]
-      (if (:error r)
-        r
-        (let [src (sub/object st id)
-              lbl (or (:label (first (filter #(= fid (:id %)) fnlib/builtins)))
-                      (:title (sub/object st fid)) fid)
-              nid (next-id st "tbl:derived-")
-              tobj {:id nid :kind :table :title (str (:title src) " · " lbl)
-                    :value (:rows r) :from id :via fid}
-              evs (cond-> [{:op :put :id nid :value tobj}]
-                    (and space (sub/object st space))
-                    (conj (nb/append-cell-event st space {:ref nid})))]
-          (sub/commit! st {:op :tx :events evs})
-          {:state (state-payload st) :openId nid})))
-    {:error "functions work on tables"}))
+  (try
+    (if-let [rows (table-rows st id)]
+      (if (and space (not (space? st space)))
+        {:error (str "not a notebook: " space)}
+        (let [r (run-any-fn st fid rows params)]
+          (if (:error r)
+            r
+            (let [src (sub/object st id)
+                  lbl (or (:label (first (filter #(= fid (:id %)) fnlib/builtins)))
+                          (:title (sub/object st fid)) fid)
+                  nid (next-id st "tbl:derived-")
+                  tobj {:id nid :kind :table :title (str (:title src) " · " lbl)
+                        :value (:rows r) :from id :via fid}
+                  evs (cond-> [{:op :put :id nid :value tobj}]
+                        (and space (space? st space))
+                        (conj (nb/append-cell-event st space {:ref nid})))]
+              (sub/commit! st {:op :tx :events evs})
+              {:state (state-payload st) :openId nid}))))
+      {:error "functions work on tables"})
+    (catch Exception e {:error (.getMessage e)})))
 
 ;; ONE verb over a table: the user says what they want, the agent picks the
 ;; simplest mechanism (declarative view-spec / browser applet / server-side
@@ -437,7 +460,7 @@
           nid (str "tbl:csv-" (count (filter #(= :table (:kind %)) (vals (sub/objects st)))) "-" (inc (rand-int 9999)))
           obj {:id nid :kind :table :title (or (not-empty title) "Imported CSV") :value rows}
           base [{:op :put :id nid :value obj}]
-          evs (if (and space (sub/object st space))
+          evs (if (and space (space? st space))
                 (conj base (nb/append-cell-event st space {:ref nid}))
                 base)]
       (sub/commit! st {:op :tx :events evs})

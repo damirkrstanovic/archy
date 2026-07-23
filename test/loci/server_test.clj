@@ -164,3 +164,25 @@
                              :value {:lang "clojure" :code "(fn [rows] (mapv #(update % :revenue * 2) rows))"}}})
     (let [r (srv/fn-apply! st "tbl:t" "fn:t-1" {} nil)]
       (is (= [200 500] (map :revenue (:value (sub/object st (:openId r)))))))))
+
+(deftest fn-apply-rejects-non-space-target
+  (let [st (store-with-table)
+        before (count (sub/history st))
+        r (srv/fn-apply! st "tbl:t" "lib:top" {:by "revenue" :n "1" :order "desc"} "tbl:t")]
+    (is (:error r))                                       ; a table is not a notebook
+    (is (= before (count (sub/history st))))              ; NOTHING committed
+    (is (map? (srv/state-payload st)))))                  ; log not poisoned
+
+(deftest fn-endpoints-reject-unknown-and-nil-fnid
+  (let [st (store-with-table)
+        before (count (sub/history st))]
+    (is (:error (srv/fn-apply! st "tbl:t" nil {} nil)))
+    (is (:error (srv/fn-apply! st "tbl:t" "lib:nope" {} nil)))
+    (is (:error (srv/fn-preview st "tbl:t" nil {})))
+    (is (= before (count (sub/history st))))))            ; nothing committed
+
+(deftest fn-preview-surfaces-empty-result-as-error
+  (let [st (store-with-table)
+        r (srv/fn-preview st "tbl:t" "lib:filter" {:col "revenue" :op ">" :value "9999"})]
+    (is (:error r))                                       ; honest "no rows came out"
+    (is (nil? (:after r)))))                              ; not an empty table
