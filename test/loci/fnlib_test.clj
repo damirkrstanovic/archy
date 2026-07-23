@@ -55,3 +55,16 @@
   (let [out (:rows (fnl/run-fn "lib:share" rows {:col "revenue"}))]
     (is (< 99.9 (reduce + (keep :share_pct out)) 100.1))  ; shares sum to 100
     (is (= 25.0 (:share_pct (first out))))))              ; 100 of 400
+
+(deftest catalog-greys-with-reasons-and-fills-options
+  (let [cat (fnl/catalog rows)                       ; has numeric + cat cols
+        by-id (into {} (map (juxt :id identity)) cat)]
+    (is (:ok (by-id "lib:filter")))
+    (is (not (:ok (by-id "lib:pivot"))))             ; rows has ONE cat col
+    (is (= "needs two category columns" (:why (by-id "lib:pivot"))))
+    ;; col params carry the live column options for the UI selects
+    (let [p (first (filter #(= "by" (:name %)) (:params (by-id "lib:top"))))]
+      (is (= ["revenue" "units"] (:options p)))))
+  (let [prose [{:note "a"} {:note "b"}]
+        by-id (into {} (map (juxt :id identity)) (fnl/catalog prose))]
+    (is (= "needs a numeric column" (:why (by-id "lib:top"))))))

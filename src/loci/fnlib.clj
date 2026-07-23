@@ -100,6 +100,20 @@
     :params [{:name "col" :type "numcol"}]
     :pred needs-numeric :run share-run}])
 
+(defn catalog
+  "The palette for one table: every builtin with :ok/:why (greyed functions
+   stay visible — the reason teaches the vocabulary) and col params filled
+   with the table's live column options."
+  [rows]
+  (let [opts {"col"    (mapv name (keys (first rows)))
+              "numcol" (mapv name (numeric-cols rows))
+              "catcol" (mapv name (cat-cols rows))}]
+    (mapv (fn [{:keys [id label doc params pred]}]
+            (let [why (when pred (pred rows))]
+              {:id id :label label :doc doc :ok (nil? why) :why why
+               :params (mapv #(if-let [o (opts (:type %))] (assoc % :options o) %) params)}))
+          builtins)))
+
 (defn run-fn [fid rows params]
   (if-let [f (first (filter #(= fid (:id %)) builtins))]
     (try
