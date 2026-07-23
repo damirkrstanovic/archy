@@ -49,6 +49,29 @@
 
 (defn- needs-numeric [rows] (when (empty? (numeric-cols rows)) "needs a numeric column"))
 
+(defn- pivot-run [rows {:keys [rows_col cols_col measure agg]}]
+  (let [rk (keyword rows_col) ck (keyword cols_col) mk (keyword measure) agg (or agg "sum")]
+    (vec (for [[rv rs] (group-by rk rows)]
+           (into {rk rv}
+                 (for [[cv cs] (group-by ck rs)]
+                   [(keyword (str cv)) (agg-val agg (keep mk cs))]))))))
+
+(defn- delta-run [rows {:keys [col]}]
+  (let [k (keyword col)]
+    (vec (map (fn [prev r]
+                (let [v (get r k) p (when prev (get prev k))]
+                  (assoc r
+                         :delta (when (and (number? v) (number? p)) (- v p))
+                         :pct_change (when (and (number? v) (number? p) (not (zero? p)))
+                                       (/ (* 100.0 (- v p)) p)))))
+              (cons nil rows) rows))))
+
+(defn- share-run [rows {:keys [col]}]
+  (let [k (keyword col) tot (reduce + 0.0 (keep k rows))]
+    (vec (map #(assoc % :share_pct (when (and (number? (get % k)) (pos? tot))
+                                     (/ (* 100.0 (get % k)) tot)))
+              rows))))
+
 (def builtins
   [{:id "lib:filter" :label "Filter rows" :doc "keep rows where a column passes a test"
     :params [{:name "col" :type "col"}
@@ -62,7 +85,20 @@
    {:id "lib:top" :label "Top N" :doc "sort by a numeric column and keep the first N"
     :params [{:name "by" :type "numcol"} {:name "n" :type "num"}
              {:name "order" :type "choice" :options ["desc" "asc"]}]
-    :pred needs-numeric :run top-run}])
+    :pred needs-numeric :run top-run}
+   {:id "lib:pivot" :label "Pivot" :doc "rows × columns grid — aggregate a measure by two categories"
+    :params [{:name "rows_col" :type "catcol"} {:name "cols_col" :type "catcol"}
+             {:name "measure" :type "numcol"} {:name "agg" :type "choice" :options ["sum" "avg" "count"]}]
+    :pred (fn [rows] (or (needs-numeric rows)
+                         (when (< (count (cat-cols rows)) 2) "needs two category columns")))
+    :run pivot-run}
+   {:id "lib:delta" :label "Change vs previous row" :doc "adds delta and %-change columns, row over row"
+    :params [{:name "col" :type "numcol"}]
+    :pred (fn [rows] (or (needs-numeric rows) (when (< (count rows) 2) "needs at least two rows")))
+    :run delta-run}
+   {:id "lib:share" :label "Share of total" :doc "adds each row's % of the column total"
+    :params [{:name "col" :type "numcol"}]
+    :pred needs-numeric :run share-run}])
 
 (defn run-fn [fid rows params]
   (if-let [f (first (filter #(= fid (:id %)) builtins))]

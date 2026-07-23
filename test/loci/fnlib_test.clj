@@ -31,3 +31,27 @@
 (deftest top-n-sorts-and-takes
   (is (= [250 100] (map :revenue (:rows (fnl/run-fn "lib:top" rows {:by "revenue" :n "2" :order "desc"})))))
   (is (= [50] (map :revenue (:rows (fnl/run-fn "lib:top" rows {:by "revenue" :n "1" :order "asc"}))))))
+
+(def rows2 [{:region "EMEA" :channel "web"    :revenue 100}
+            {:region "EMEA" :channel "retail" :revenue 40}
+            {:region "APAC" :channel "web"    :revenue 250}])
+
+(deftest pivot-goes-wide
+  (let [out (:rows (fnl/run-fn "lib:pivot" rows2 {:rows_col "region" :cols_col "channel"
+                                                  :measure "revenue" :agg "sum"}))
+        emea (first (filter #(= "EMEA" (:region %)) out))]
+    (is (= 2 (count out)))
+    (is (= 100 (:web emea)))
+    (is (= 40 (:retail emea)))))
+
+(deftest delta-adds-change-columns
+  (let [ts [{:month "Jan" :mrr 100} {:month "Feb" :mrr 110}]
+        out (:rows (fnl/run-fn "lib:delta" ts {:col "mrr"}))]
+    (is (nil? (:delta (first out))))
+    (is (= 10 (:delta (second out))))
+    (is (= 10.0 (:pct_change (second out))))))
+
+(deftest share-of-total
+  (let [out (:rows (fnl/run-fn "lib:share" rows {:col "revenue"}))]
+    (is (< 99.9 (reduce + (keep :share_pct out)) 100.1))  ; shares sum to 100
+    (is (= 25.0 (:share_pct (first out))))))              ; 100 of 400
