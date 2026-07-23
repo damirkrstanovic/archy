@@ -40,6 +40,34 @@
 
 (defn- body-json [req] (when-let [b (:body req)] (json/read-str (slurp b) :key-fn keyword)))
 
+;; ---- time travel: ?at=N freezes any read at a log prefix; /api/events
+;; labels the log for the scrubber. The past is read-only by construction. ----
+(defn store-at
+  "The store to read from: live when at-str is nil/garbage, else a read-only
+   frozen window clamped to [0, event-count]."
+  [st at-str]
+  (if-let [n (and at-str (parse-long at-str))]
+    (sub/frozen-at st (-> n (max 0) (min (count (sub/history st)))))
+    st))
+
+(defn- title-of [st id] (or (:title (sub/object st id)) id "object"))
+
+(defn- event-label [st {:keys [op id events]}]
+  (case op
+    :put    (str "＋ " (title-of st id))
+    :assoc  (str "✎ " (title-of st id))
+    :delete (str "✕ " (or id "object"))
+    :tx     (str (event-label st (first events))
+                 (when (> (count events) 1) (str " (+" (dec (count events)) ")")))
+    (name (or op :event))))
+
+(defn events-payload [st]
+  (let [evs (sub/history st)]
+    {:total (count evs)
+     :events (vec (map-indexed (fn [i ev] {:i (inc i) :op (name (or (:op ev) :event))
+                                           :ts (:ts ev) :label (event-label st ev)})
+                               evs))}))
+
 ;; ---- payloads ----
 (defn state-payload [st]
   (let [objs (vals (sub/objects st))]
@@ -632,8 +660,9 @@
     (cond
       (= uri "/")            {:status 200 :headers {"Content-Type" "text/html; charset=utf-8"}
                               :body (slurp (io/resource "public/index.html"))}
-      (= uri "/api/state")   (json-resp (state-payload st))
-      (= uri "/api/mold")    (json-resp (mold-payload st (params "id") (params "view")))
+      (= uri "/api/state")   (json-resp (state-payload (store-at st (params "at"))))
+      (= uri "/api/mold")    (json-resp (mold-payload (store-at st (params "at")) (params "id") (params "view")))
+      (= uri "/api/events")  (json-resp (events-payload st))
       (= uri "/api/leap")    (json-resp (leap-payload st @mem/memory (params "q")))
       (= uri "/api/undo")    (do (sub/undo! st) (json-resp (state-payload st)))
       (= uri "/api/edit")    (let [{:keys [id value]} (body-json req)] (json-resp (edit! st id value)))
@@ -653,8 +682,8 @@
       (= uri "/api/import-csv")(let [{:keys [title csv space]} (body-json req)] (json-resp (import-csv! st title csv space)))
       (= uri "/api/notebook")(if (= :post (:request-method req))
                                (json-resp (notebook-op! st (body-json req)))
-                               (json-resp (notebook-payload st (params "id"))))
-      (= uri "/api/links")   (json-resp (nb/links st (params "space")))
+                               (json-resp (notebook-payload (store-at st (params "at")) (params "id"))))
+      (= uri "/api/links")   (json-resp (nb/links (store-at st (params "at")) (params "space")))
       (= uri "/api/memory")  (json-resp {:facts (let [qq (params "q")]
                                                   (if (seq qq)
                                                     (mold/recall @mem/memory qq {:k 20})
@@ -663,7 +692,8 @@
                                 (json-resp (deep-dive-start! st (:space (body-json req))))
                                 {:status 405 :headers {"Content-Type" "text/plain"} :body "POST only"})
       (str/starts-with? uri "/api/object/")
-      (json-resp (mold-payload st (java.net.URLDecoder/decode (subs uri (count "/api/object/")) "UTF-8") nil))
+      (json-resp (mold-payload (store-at st (params "at"))
+                               (java.net.URLDecoder/decode (subs uri (count "/api/object/")) "UTF-8") nil))
       :else {:status 404 :headers {"Content-Type" "text/plain"} :body "not found"})))
 
 (defonce server (atom nil))

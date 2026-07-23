@@ -1,5 +1,6 @@
 (ns loci.server-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is]]
             [loci.memory :as mem]
             [loci.mold :as mold]
             [loci.server :as srv]
@@ -186,3 +187,40 @@
         r (srv/fn-preview st "tbl:t" "lib:filter" {:col "revenue" :op ">" :value "9999"})]
     (is (:error r))                                       ; honest "no rows came out"
     (is (nil? (:after r)))))                              ; not an empty table
+
+(deftest store-at-clamps-and-freezes
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "doc:a" :value {:id "doc:a" :kind :doc :title "A" :value "x"}})
+    (sub/commit! st {:op :put :id "doc:b" :value {:id "doc:b" :kind :doc :title "B" :value "y"}})
+    ;; nil/garbage → the live store itself
+    (is (identical? st (srv/store-at st nil)))
+    (is (identical? st (srv/store-at st "garbage")))
+    ;; a valid n → frozen prefix
+    (is (nil? (sub/object (srv/store-at st "1") "doc:b")))
+    (is (= "A" (:title (sub/object (srv/store-at st "1") "doc:a"))))
+    ;; clamped: negative → 0 events, huge → all events
+    (is (empty? (sub/objects (srv/store-at st "-5"))))
+    (is (= "B" (:title (sub/object (srv/store-at st "999") "doc:b"))))))
+
+(deftest events-payload-has-humane-labels
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "tbl:t" :value {:id "tbl:t" :kind :table :title "Revenue" :value [{:a 1}]}})
+    (sub/commit! st {:op :tx :events [{:op :put :id "doc:n" :value {:id "doc:n" :kind :doc :title "Note" :value "hi"}}
+                                      {:op :assoc :id "tbl:t" :path [:title] :value "Revenue2"}]})
+    (sub/commit! st {:op :delete :id "doc:n"})
+    (let [{:keys [total events]} (srv/events-payload st)]
+      (is (= 3 total))
+      (is (= 3 (count events)))
+      (is (= [1 2 3] (map :i events)))
+      (is (str/includes? (:label (first events)) "Revenue"))   ; put labels with title
+      (is (str/includes? (:label (second events)) "(+1)"))     ; tx aggregates
+      (is (str/includes? (:label (nth events 2)) "doc:n")))))  ; delete labels the id
+
+(deftest state-payload-time-travels-via-frozen-store
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "space:n" :value {:id "space:n" :kind :space :title "N" :value {:intent "i" :cells []}}})
+    (sub/commit! st {:op :put :id "tbl:t" :value {:id "tbl:t" :kind :table :title "T" :value [{:a 1}]}})
+    (let [past (srv/state-payload (srv/store-at st "1"))]
+      (is (= 1 (:events past)))
+      (is (= ["space:n"] (map :id (:spaces past))))
+      (is (empty? (:objects past))))))
