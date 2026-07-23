@@ -99,3 +99,25 @@
 (defn persistent-store
   ([] (persistent-store (str (data-dir) "/substrate.edn")))
   ([path] (->PersistentStore (atom (load-events path)) path)))
+
+;; ----------------------------------------------------------------------------
+;; a read-only window onto the past — the same Store protocol over an `as-of`
+;; snapshot, so every reader (mold, notebook, links, payloads) time-travels
+;; for free. The past cannot be edited; only viewed.
+;; ----------------------------------------------------------------------------
+
+(defrecord FrozenStore [snapshot log-prefix]
+  Store
+  (commit! [_ _] (throw (UnsupportedOperationException. "read-only: the past cannot be edited")))
+  (state   [_] snapshot)
+  (objects [_] (:objects snapshot))
+  (object  [_ id] (get-in snapshot [:objects id]))
+  (history [_] log-prefix)
+  (undo!   [_] (throw (UnsupportedOperationException. "read-only: the past cannot be edited")))
+  (as-of   [_ n] (materialize (take n log-prefix))))
+
+(defn frozen-at
+  "A read-only Store showing the world after the first n events of `st`."
+  [st n]
+  (let [prefix (vec (take n (history st)))]
+    (->FrozenStore (materialize prefix) prefix)))
