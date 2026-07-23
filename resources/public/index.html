@@ -94,7 +94,8 @@
   .timebar input[type=range]{flex:1}
   .timelabel{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;max-width:40%;overflow:hidden;text-overflow:ellipsis}
   .world.timemode .actions,.world.timemode .cellbar,.world.timemode .addrow,
-  .world.timemode .mkcell,.world.timemode select[data-remold]{display:none!important}
+  .world.timemode .mkcell,.world.timemode select[data-remold],
+  .world.timemode #editbtn,.world.timemode #makebtn,.world.timemode .fnpal{display:none!important}
   .modal{position:fixed;inset:0;z-index:70;background:rgba(20,28,24,.28);backdrop-filter:blur(2px);display:none;align-items:flex-start;justify-content:center;padding-top:92px}
   .modal.on{display:flex}
   .modalcard{width:100%;max-width:620px;max-height:76vh;display:flex;flex-direction:column;background:var(--white);border:1px solid var(--line);border-radius:14px;box-shadow:0 40px 80px -40px rgba(20,30,25,.6)}
@@ -224,6 +225,7 @@ function applyState(s){
   STATE.spaces=ordered;
   STATE.objects={}; s.objects.forEach(o=>STATE.objects[o.id]=o); STATE.events=s.events;
   const ni=STATE.spaces.findIndex(sp=>sp.id===fid); if(ni>=0) focusIdx=ni;
+  else focusIdx=Math.min(focusIdx,Math.max(0,STATE.spaces.length-1));   // focused space vanished — stay in range
   renderStrip();
 }
 function renderStrip(){ ambient.textContent = STATE.spaces.length+' notebooks · '+Object.keys(STATE.objects).length+' objects · '+STATE.events+' events'; }
@@ -244,12 +246,13 @@ function showToast(msg,undoFn){
   toastTimer=setTimeout(()=>t.classList.remove('on'), undoFn?5000:2500);
 }
 async function undo(){
+  if(TIME){ showToast('time mode — ↩ now to edit'); return; }
   const s=await API.undo();
   const gone = openId && !s.objects.find(o=>o.id===openId);
   applyState(s); if(gone) openId=null;
   rebuild(); if(openId) openObject(openId);
 }
-document.getElementById('undoBtn').addEventListener('click',()=>{ if(TIME){ showToast('you\'re viewing the past — ↩ now to edit'); return; } undo(); showToast('Reverted last event'); });
+document.getElementById('undoBtn').addEventListener('click',()=>{ undo(); if(!TIME) showToast('Reverted last event'); });
 
 // long agent flows run server-side as jobs; we poll instead of holding a fetch
 // open for minutes (browsers kill those — the old "refresh to see it" bug).
@@ -295,7 +298,7 @@ function renderBody(i){
 }
 
 async function cellOp(i,body){
-  if(TIME){ showToast('you\'re viewing the past — ↩ now to edit'); return; }
+  if(TIME){ showToast('time mode — ↩ now to edit'); return; }
   const sp=STATE.spaces[i], before=STATE.events;
   const res=await API.notebookOp(Object.assign({space:sp.id},body));
   if(res.error){ showToast(res.error); return; }
@@ -381,6 +384,7 @@ async function renderNotebook(i){
     let res; try{ res=await API.deepDive(sp.id); }catch(e){ showToast('deep-dive: network error'); renderBody(i); return; }
     if(res.error){ showToast('deep-dive: '+res.error); renderBody(i); return; }
     pollJob(res.job, r=>{
+      if(TIME){ showToast('agent finished — ↩ now to see it'); return; }
       if(r.error){ showToast('deep-dive: '+r.error); if(mode==='focus'&&focusIdx===i&&!openId) renderBody(i); return; }
       applyState(r.state); safeRebuild();
       showToast('Spawned '+r.spawned.length+' connected deep-dive notebook'+(r.spawned.length===1?'':'s'));
@@ -429,6 +433,7 @@ function startResearch(i){
     let res; try{ res=await API.research(sp.id, p); }catch(e){ showToast('research: network error'); renderBody(i); return; }
     if(res.error){ showToast('research: '+res.error); renderBody(i); return; }
     pollJob(res.job, r=>{
+      if(TIME){ showToast('agent finished — ↩ now to see it'); return; }
       if(r.error){ showToast('research: '+r.error); if(mode==='focus'&&focusIdx===i&&!openId) renderBody(i); return; }
       applyState(r.state);
       // only jump to the findings if the user is still waiting in this notebook
@@ -726,10 +731,10 @@ const timebar=document.getElementById('timebar'), timeRange=document.getElementB
       timeLabel=document.getElementById('timeLabel');
 let timeDeb;
 async function enterTime(){
-  const ev=await API.events();
+  let ev; try{ ev=await API.events(); }catch(e){ showToast('time: network error'); return; }
   TIME={n:ev.total,total:ev.total,events:ev.events};
   timeRange.min=0; timeRange.max=ev.total; timeRange.value=ev.total;
-  timebar.classList.add('on'); overview(); paintTime();
+  timebar.classList.add('on'); overview(); rebuild(); paintTime();
 }
 function timeCaption(){
   if(!TIME) return '—';
@@ -740,7 +745,7 @@ function timeCaption(){
 }
 function paintTime(){
   timeLabel.textContent=timeCaption();
-  world.classList.toggle('timemode', !!TIME && TIME.n<TIME.total);
+  world.classList.toggle('timemode', !!TIME);   // time mode on ⇒ read-only, at ANY slider position
 }
 async function scrubTo(n){
   TIME.n=n; paintTime();
@@ -748,14 +753,15 @@ async function scrubTo(n){
   timeDeb=setTimeout(async()=>{
     if(!TIME) return;
     const want=TIME.n;
-    const s=await API.state(want<TIME.total?want:undefined);
+    let s; try{ s=await API.state(want<TIME.total?want:undefined); }catch(e){ showToast('time: network error'); return; }
     if(!TIME||TIME.n!==want) return;                       // stale response
     applyState(s); mode='overview'; openId=null; rebuild();
   },120);
 }
 async function exitTime(){
+  let s; try{ s=await API.state(); }catch(e){ showToast('network error — still in the past'); return; }
   TIME=null; timebar.classList.remove('on'); world.classList.remove('timemode');
-  applyState(await API.state()); rebuild();
+  applyState(s); rebuild();
 }
 document.getElementById('timeBtn').addEventListener('click',()=>TIME?exitTime():enterTime());
 document.getElementById('timeNow').addEventListener('click',exitTime);
@@ -892,7 +898,7 @@ async function keepNote(){
 }
 function openLeap(){ cmd.classList.add('live'); renderLeap(); }
 function closeLeap(){ cmd.classList.remove('live'); q.value=''; q.blur(); }
-q.addEventListener('focus',openLeap);
+q.addEventListener('focus',()=>{ if(TIME){ q.blur(); showToast('time mode — ↩ now to search'); return; } openLeap(); });
 q.addEventListener('input',()=>{sel=0;renderLeap();});
 q.addEventListener('keydown',e=>{
   if(e.key==='ArrowDown'){e.preventDefault();sel=Math.min(sel+1,filtered.length-1);paintSel();}
