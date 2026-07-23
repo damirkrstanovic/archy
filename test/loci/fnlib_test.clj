@@ -20,3 +20,14 @@
 
 (deftest unknown-function-errors
   (is (:error (fnl/run-fn "lib:nope" rows {}))))
+
+(deftest group-aggregates
+  (let [out (:rows (fnl/run-fn "lib:group" rows {:by "region" :measure "revenue" :agg "sum"}))]
+    (is (= 2 (count out)))
+    (is (= 150 (:sum_revenue (first (filter #(= "EMEA" (:region %)) out))))))
+  (let [out (:rows (fnl/run-fn "lib:group" rows {:by "region" :measure "revenue" :agg "count"}))]
+    (is (= 2 (:count_revenue (first (filter #(= "EMEA" (:region %)) out)))))))
+
+(deftest top-n-sorts-and-takes
+  (is (= [250 100] (map :revenue (:rows (fnl/run-fn "lib:top" rows {:by "revenue" :n "2" :order "desc"})))))
+  (is (= [50] (map :revenue (:rows (fnl/run-fn "lib:top" rows {:by "revenue" :n "1" :order "asc"}))))))
