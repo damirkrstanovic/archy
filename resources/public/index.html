@@ -110,6 +110,15 @@
   .cellmold .hd select{margin-left:auto;padding:2px 6px;border-radius:6px;border:1px solid var(--line);font:inherit;font-size:11.5px}
   .cellmold .hd .mkcell{border:1px solid var(--line);background:transparent;border-radius:6px;color:var(--accent);cursor:pointer;font-size:11.5px;padding:2px 7px}
   .cellmold .hd .mkcell:hover{border-color:var(--accent-line);background:var(--accent-soft)}
+  .fnpal{border:1px dashed var(--accent-line);border-radius:10px;background:var(--panel);padding:10px 12px;margin:0 0 10px}
+  .fnchips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .fnchip{border:1px solid var(--line);background:var(--white);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer}
+  .fnchip:hover{border-color:var(--accent-line)} .fnchip.on{border-color:var(--accent);color:var(--accent)}
+  .fnchip.dis{opacity:.45;cursor:not-allowed}
+  .fnparams{display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px;margin-bottom:8px}
+  .fnparams select,.fnparams input{border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:inherit;font-size:12px}
+  .fnba{display:flex;gap:10px;align-items:flex-start;overflow-x:auto}
+  .fnba>div{flex:1;min-width:0} .fnarrow{flex:none;color:var(--accent);padding-top:22px}
   .cellmold .bd{padding:10px 12px;overflow-x:auto}
   .chips{font-size:10.5px;font-family:var(--mono);color:var(--faint);padding:5px 11px;border-top:1px dashed var(--line-2)}
   .ghostchip{display:inline-block;padding:0 6px;border-radius:4px;background:var(--panel);border:1px solid var(--line);color:var(--muted);cursor:pointer;margin:0 2px}
@@ -170,6 +179,9 @@ const API = {
   memory: q => fetch('/api/memory'+(q?'?q='+encodeURIComponent(q):'')).then(r=>r.json()),
   deepDive: space => POST('/api/deep-dive',{space}),
   job: id => fetch('/api/job?id='+encodeURIComponent(id)).then(r=>r.json()),
+  fns: id => fetch('/api/fns?id='+encodeURIComponent(id)).then(r=>r.json()),
+  fnPreview: (id,fnid,params) => POST('/api/fn-preview',{id,fnid,params}),
+  fnApply: (id,fnid,params,space) => POST('/api/fn-apply',{id,fnid,params,space}),
 };
 
 let STATE={spaces:[],objects:{}};
@@ -315,7 +327,8 @@ async function renderNotebook(i){
       cellsH+='<div class="cellwrap" data-cell="'+c.i+'">'+bar+
         '<div class="cellmold"><div class="hd"><span class="t" data-open="'+esc(c.id)+'">'+esc(c.title)+'</span>'+
         '<span class="chip">'+esc(c.id)+'</span><select data-remold="'+c.i+'">'+opts+'</select>'+
-        (mkable?'<button class="mkcell" data-make="'+esc(c.id)+'" title="✦ make… — ask for a view, a computed table, or a visualization of this data">✦</button>':'')+'</div>'+
+        (mkable?'<button class="mkcell" data-make="'+esc(c.id)+'" title="✦ make… — ask for a view, a computed table, or a visualization of this data">✦</button>'+
+                '<button class="mkcell" data-fnp="'+esc(c.id)+'" title="ƒ apply a function — filter, group, pivot, top-N…">ƒ</button>':'')+'</div>'+
         '<div class="bd">'+renderMold(c)+'</div>'+(chips?'<div class="chips">'+chips+'</div>':'')+'</div></div>';
     }
   });
@@ -358,6 +371,10 @@ async function renderNotebook(i){
   b.querySelectorAll('[data-remold]').forEach(sel=>sel.addEventListener('change',()=>cellOp(i,{op:'set-view',idx:+sel.dataset.remold,view:sel.value})));
   b.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>openObject(el.dataset.open)));
   b.querySelectorAll('[data-make]').forEach(el=>el.addEventListener('click',ev=>{ev.stopPropagation();makeOn(el.dataset.make);}));
+  b.querySelectorAll('[data-fnp]').forEach(el=>el.addEventListener('click',ev=>{
+    ev.stopPropagation();
+    openFnPalette(i, el.dataset.fnp, el.closest('.cellmold'));
+  }));
   b.querySelectorAll('[data-space]').forEach(el=>el.addEventListener('click',()=>{
     const j=STATE.spaces.findIndex(s=>s.id===el.dataset.space); if(j>=0) enter(j);
   }));
@@ -483,6 +500,54 @@ function runApplet(m){
 async function makeOn(id){
   await openObject(id);
   const mk=document.querySelector('#makebtn'); if(mk) mk.click();
+}
+// ƒ on a cell: the function palette, close to the data. Incompatible functions
+// stay visible but greyed WITH the reason — the palette teaches the vocabulary.
+async function openFnPalette(i, id, anchor){
+  const sp=STATE.spaces[i];
+  document.querySelectorAll('.fnpal').forEach(el=>el.remove());   // one palette at a time
+  let res; try{ res=await API.fns(id); }catch(e){ showToast('palette: network error'); return; }
+  if(res.error){ showToast(res.error); return; }
+  const host=document.createElement('div'); host.className='fnpal';
+  host.innerHTML='<div class="sec-h" style="margin-top:0">ƒ apply a function <button class="mkcell" style="float:right" data-x="close">✕</button></div>'+
+    '<div class="fnchips">'+res.fns.map((f,k)=>
+      '<button class="fnchip'+(f.ok?'':' dis')+'" data-k="'+k+'" title="'+esc(f.ok?(f.doc||''):f.why)+'">'+esc(f.label)+'</button>').join('')+'</div>'+
+    '<div class="fnbody"></div>';
+  anchor.insertAdjacentElement('afterend', host);
+  host.querySelector('[data-x="close"]').addEventListener('click',()=>host.remove());
+  const body=host.querySelector('.fnbody');
+  host.querySelectorAll('.fnchip').forEach(ch=>ch.addEventListener('click',()=>{
+    const f=res.fns[+ch.dataset.k];
+    if(!f.ok){ showToast(f.why); return; }
+    host.querySelectorAll('.fnchip').forEach(c=>c.classList.remove('on')); ch.classList.add('on');
+    const ctl=p=>{
+      if(p.options) return '<label>'+esc(p.name)+' <select data-p="'+esc(p.name)+'">'+
+        p.options.map(o=>'<option>'+esc(o)+'</option>').join('')+'</select></label>';
+      if(p.type==='num') return '<label>'+esc(p.name)+' <input data-p="'+esc(p.name)+'" type="number" value="10" style="width:64px"></label>';
+      return '<label>'+esc(p.name)+' <input data-p="'+esc(p.name)+'" style="width:110px"></label>';
+    };
+    body.innerHTML='<div class="fnparams">'+(f.params||[]).map(ctl).join('')+
+      '<button class="btn ghost sm" data-a="pv">Preview</button>'+
+      '<button class="btn sm" data-a="ap">Apply</button></div><div class="fnprev"></div>';
+    const collect=()=>{ const ps={}; body.querySelectorAll('[data-p]').forEach(el=>ps[el.dataset.p]=el.value); return ps; };
+    const prev=body.querySelector('.fnprev');
+    const preview=async()=>{
+      prev.innerHTML='<div style="color:var(--muted);font-size:12px">previewing…</div>';
+      let r; try{ r=await API.fnPreview(id,f.id,collect()); }catch(e){ prev.innerHTML=''; showToast('preview: network error'); return; }
+      if(r.error){ prev.innerHTML='<div style="color:var(--attn);font-size:12px">'+esc(r.error)+'</div>'; return; }
+      prev.innerHTML='<div class="fnba"><div><div class="sec-h">before</div>'+tableHTML(r.before)+'</div>'+
+        '<div class="fnarrow">→</div><div><div class="sec-h">after · '+r.count+' rows</div>'+tableHTML(r.after)+'</div></div>'+
+        '<div style="font-size:11px;color:var(--faint);margin-top:4px">first 8 rows each — nothing is committed until you Apply</div>';
+    };
+    body.querySelector('[data-a="pv"]').addEventListener('click',preview);
+    body.querySelectorAll('[data-p]').forEach(el=>el.addEventListener('change',preview));
+    body.querySelector('[data-a="ap"]').addEventListener('click',async()=>{
+      let r; try{ r=await API.fnApply(id,f.id,collect(),sp.id); }catch(e){ showToast('apply: network error'); return; }
+      if(r.error){ showToast(r.error); return; }
+      applyState(r.state); renderBody(i);
+      showToast('Applied '+f.label+' — new table in this notebook (reversible)', undo);
+    });
+  }));
 }
 function startDo(i,m){
   const body=document.getElementById('body'+i).querySelector('#moldbody');
