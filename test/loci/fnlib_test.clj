@@ -56,6 +56,39 @@
     (is (< 99.9 (reduce + (keep :share_pct out)) 100.1))  ; shares sum to 100
     (is (= 25.0 (:share_pct (first out))))))              ; 100 of 400
 
+(deftest group-min-max-avg
+  (let [g (fn [agg] (:rows (fnl/run-fn "lib:group" rows {:by "region" :measure "revenue" :agg agg})))
+        emea (fn [out] (first (filter #(= "EMEA" (:region %)) out)))]
+    (is (= 50 (:min_revenue (emea (g "min")))))
+    (is (= 100 (:max_revenue (emea (g "max")))))
+    (is (= 75.0 (:avg_revenue (emea (g "avg")))))))
+
+(deftest group-survives-missing-or-mixed-measure
+  ;; missing measure column: an honest nil aggregate, never JVM jargon
+  (let [out (fnl/run-fn "lib:group" rows {:by "region" :measure "nope" :agg "min"})]
+    (is (nil? (:error out)))
+    (is (nil? (:min_nope (first (:rows out))))))
+  ;; mixed-type column: non-numbers are ignored, not a ClassCastException
+  (let [mixed [{:g "a" :v 10} {:g "a" :v "n/a"} {:g "b" :v 5}]]
+    (is (= 10 (:sum_v (first (filter #(= "a" (:g %))
+                                     (:rows (fnl/run-fn "lib:group" mixed {:by "g" :measure "v" :agg "sum"})))))))
+    (is (nil? (:error (fnl/run-fn "lib:top" mixed {:by "v" :n "2" :order "desc"}))))))
+
+(deftest pivot-count-counts-rows-and-names-nil-cells
+  (let [cells [{:region "EMEA" :channel "web"}
+               {:region "EMEA" :channel "web" :revenue 5}
+               {:region "EMEA" :revenue 7}]
+        out (:rows (fnl/run-fn "lib:pivot" cells {:rows_col "region" :cols_col "channel"
+                                                  :measure "revenue" :agg "count"}))
+        emea (first out)]
+    (is (= 2 (:web emea)))                  ; count counts rows per cell, like lib:group
+    (is (= 1 (get emea (keyword "n/a")))))) ; nil category gets a readable name, not :
+
+(deftest share-handles-negative-totals
+  (let [out (:rows (fnl/run-fn "lib:share" [{:x -100} {:x -300}] {:col "x"}))]
+    (is (= 25.0 (:share_pct (first out))))
+    (is (= 75.0 (:share_pct (second out))))))
+
 (deftest catalog-greys-with-reasons-and-fills-options
   (let [cat (fnl/catalog rows)                       ; has numeric + cat cols
         by-id (into {} (map (juxt :id identity)) cat)]

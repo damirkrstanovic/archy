@@ -4,10 +4,16 @@
    vector. UI-free: catalog and run-fn work over plain rows, any shell renders."
   (:require [clojure.string :as str]))
 
-(defn numeric-cols [rows]
+(defn numeric-cols
+  "Columns whose value is a number — judged from the first row only,
+   a cheap guess rather than a full scan."
+  [rows]
   (vec (for [[k v] (first rows) :when (number? v)] k)))
 
-(defn cat-cols [rows]
+(defn cat-cols
+  "Category columns: all-string columns with 2–12 distinct values —
+   few enough to group by, more than one so grouping means something."
+  [rows]
   (vec (for [k (keys (first rows))
              :let [vs (map k rows)]
              :when (and (every? string? vs) (<= 2 (count (distinct vs)) 12))]
@@ -32,19 +38,19 @@
   (case agg
     "sum" (reduce + 0 xs)
     "avg" (if (seq xs) (/ (reduce + 0.0 xs) (count xs)) 0)
-    "min" (apply min xs)
-    "max" (apply max xs)
+    "min" (when (seq xs) (apply min xs))
+    "max" (when (seq xs) (apply max xs))
     "count" (count xs)))
 
 (defn- group-run [rows {:keys [by measure agg]}]
   (let [bk (keyword by) mk (keyword measure) agg (or agg "sum")
         ok (keyword (str agg "_" measure))]
     (vec (for [[g rs] (group-by bk rows)]
-           {bk g ok (if (= agg "count") (count rs) (agg-val agg (keep mk rs)))}))))
+           {bk g ok (if (= agg "count") (count rs) (agg-val agg (filter number? (map mk rs))))}))))
 
 (defn- top-run [rows {:keys [by n order]}]
   (let [k (keyword by) n (int (or (->num n) 10))
-        s (sort-by #(or (get % k) 0) rows)]
+        s (sort-by #(let [v (get % k)] (if (number? v) v 0)) rows)]
     (vec (take n (if (= order "asc") s (reverse s))))))
 
 (defn- needs-numeric [rows] (when (empty? (numeric-cols rows)) "needs a numeric column"))
@@ -54,7 +60,10 @@
     (vec (for [[rv rs] (group-by rk rows)]
            (into {rk rv}
                  (for [[cv cs] (group-by ck rs)]
-                   [(keyword (str cv)) (agg-val agg (keep mk cs))]))))))
+                   [(keyword (if (nil? cv) "n/a" (str cv)))
+                    (if (= agg "count")
+                      (count cs)
+                      (agg-val agg (filter number? (map mk cs))))]))))))
 
 (defn- delta-run [rows {:keys [col]}]
   (let [k (keyword col)]
@@ -67,8 +76,8 @@
               (cons nil rows) rows))))
 
 (defn- share-run [rows {:keys [col]}]
-  (let [k (keyword col) tot (reduce + 0.0 (keep k rows))]
-    (vec (map #(assoc % :share_pct (when (and (number? (get % k)) (pos? tot))
+  (let [k (keyword col) tot (reduce + 0.0 (filter number? (map k rows)))]
+    (vec (map #(assoc % :share_pct (when (and (number? (get % k)) (not (zero? tot)))
                                      (/ (* 100.0 (get % k)) tot)))
               rows))))
 
@@ -77,7 +86,7 @@
     :params [{:name "col" :type "col"}
              {:name "op" :type "choice" :options ["=" "≠" ">" "<" "contains"]}
              {:name "value" :type "text"}]
-    :pred (fn [_] nil) :run filter-run}
+    :run filter-run}
    {:id "lib:group" :label "Group & aggregate" :doc "one row per group — sum/avg/min/max/count a column"
     :params [{:name "by" :type "col"} {:name "measure" :type "numcol"}
              {:name "agg" :type "choice" :options ["sum" "avg" "min" "max" "count"]}]
@@ -114,8 +123,12 @@
                :params (mapv #(if-let [o (opts (:type %))] (assoc % :options o) %) params)}))
           builtins)))
 
-(defn run-fn [fid rows params]
-  (if-let [f (first (filter #(= fid (:id %)) builtins))]
+(defn run-fn
+  "Run builtin `fid` over rows with string-valued params. Returns
+   {:rows [...]} on success or {:error \"...\"} — never throws; an
+   empty result is an honest error, not an empty table."
+  [fid rows params]
+  (if-let [f (some #(when (= fid (:id %)) %) builtins)]
     (try
       (let [out ((:run f) rows params)]
         (if (and (seq out) (every? map? out))
