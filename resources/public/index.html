@@ -53,6 +53,7 @@
          transition:transform .5s cubic-bezier(.6,.02,.1,1),opacity .4s;background:var(--panel);border:1px solid var(--line);
          border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 60px -40px rgba(20,30,25,.5)}
   .world.overview .panel{cursor:pointer} .world.overview .panel:hover{border-color:var(--accent-line)}
+  .panel.child{border-left:4px solid var(--accent-line)}
   .p-head{padding:22px 26px 12px;border-bottom:1px solid var(--line-2)}
   .p-eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-bottom:9px}
   .p-title{font-size:23px;font-weight:600;letter-spacing:-.02em;margin:0}
@@ -107,6 +108,8 @@
   .cellmold .hd{display:flex;align-items:center;gap:8px;padding:7px 11px;background:var(--panel);border-bottom:1px solid var(--line-2);font-size:12.5px}
   .cellmold .hd .t{font-weight:500;cursor:pointer} .cellmold .hd .t:hover{color:var(--accent)}
   .cellmold .hd select{margin-left:auto;padding:2px 6px;border-radius:6px;border:1px solid var(--line);font:inherit;font-size:11.5px}
+  .cellmold .hd .mkcell{border:1px solid var(--line);background:transparent;border-radius:6px;color:var(--accent);cursor:pointer;font-size:11.5px;padding:2px 7px}
+  .cellmold .hd .mkcell:hover{border-color:var(--accent-line);background:var(--accent-soft)}
   .cellmold .bd{padding:10px 12px;overflow-x:auto}
   .chips{font-size:10.5px;font-family:var(--mono);color:var(--faint);padding:5px 11px;border-top:1px dashed var(--line-2)}
   .ghostchip{display:inline-block;padding:0 6px;border-radius:4px;background:var(--panel);border:1px solid var(--line);color:var(--muted);cursor:pointer;margin:0 2px}
@@ -166,6 +169,7 @@ const API = {
   notebookOp: body => POST('/api/notebook', body),
   memory: q => fetch('/api/memory'+(q?'?q='+encodeURIComponent(q):'')).then(r=>r.json()),
   deepDive: space => POST('/api/deep-dive',{space}),
+  job: id => fetch('/api/job?id='+encodeURIComponent(id)).then(r=>r.json()),
 };
 
 let STATE={spaces:[],objects:{}};
@@ -182,7 +186,16 @@ function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 // ---------------- boot / state ----------------
 async function boot(){ applyState(await API.state()); rebuild(); }
 function applyState(s){
-  STATE.spaces=s.spaces; STATE.objects={}; s.objects.forEach(o=>STATE.objects[o.id]=o); STATE.events=s.events;
+  const fid=(STATE.spaces[focusIdx]||{}).id;
+  // cluster spawned notebooks right after their hub so the overview groups them
+  const byHub={}; s.spaces.forEach(sp=>{ const h=sp['spawned-by']; if(h) (byHub[h]=byHub[h]||[]).push(sp); });
+  const ordered=[], seen=new Set();
+  const emit=sp=>{ if(seen.has(sp.id)) return; seen.add(sp.id); ordered.push(sp); (byHub[sp.id]||[]).forEach(emit); };
+  s.spaces.forEach(sp=>{ const h=sp['spawned-by']; if(!h||!s.spaces.some(x=>x.id===h)) emit(sp); });
+  s.spaces.forEach(sp=>{ if(!seen.has(sp.id)) emit(sp); });   // paranoia: never drop a panel
+  STATE.spaces=ordered;
+  STATE.objects={}; s.objects.forEach(o=>STATE.objects[o.id]=o); STATE.events=s.events;
+  const ni=STATE.spaces.findIndex(sp=>sp.id===fid); if(ni>=0) focusIdx=ni;
   renderStrip();
 }
 function renderStrip(){ ambient.textContent = STATE.spaces.length+' notebooks · '+Object.keys(STATE.objects).length+' objects · '+STATE.events+' events'; }
@@ -210,10 +223,29 @@ async function undo(){
 }
 document.getElementById('undoBtn').addEventListener('click',()=>{ undo(); showToast('Reverted last event'); });
 
+// long agent flows run server-side as jobs; we poll instead of holding a fetch
+// open for minutes (browsers kill those — the old "refresh to see it" bug).
+function pollJob(id,onDone){
+  const tick=async()=>{
+    let s; try{ s=await API.job(id); }catch(e){ setTimeout(tick,4000); return; }  // network blip — keep waiting
+    if(!s.done){ setTimeout(tick,3000); return; }
+    onDone(s.result||{error:s.error||'job lost'});
+  };
+  setTimeout(tick,2000);
+}
+// a job can finish while the user is typing somewhere — don't yank the DOM out
+// from under them; wait until no input is focused (LEAP box excepted).
+function safeRebuild(){
+  const ae=document.activeElement;
+  if(ae&&ae!==q&&(ae.tagName==='INPUT'||ae.tagName==='TEXTAREA')){ setTimeout(safeRebuild,4000); return; }
+  rebuild(); if(openId) openObject(openId);
+}
+
 function buildPanel(sp,i){
-  const p=document.createElement('div'); p.className='panel'; p.dataset.i=i;
-  p.innerHTML='<div class="p-status"><span class="adot"></span>notebook</div>'+
-    '<div class="p-head"><div class="p-eyebrow">notebook · intention</div>'+
+  const hub = sp['spawned-by'] ? STATE.spaces.find(h=>h.id===sp['spawned-by']) : null;
+  const p=document.createElement('div'); p.className='panel'+(hub?' child':''); p.dataset.i=i;
+  p.innerHTML='<div class="p-status"><span class="adot"></span>'+(hub?'spawned':'notebook')+'</div>'+
+    '<div class="p-head"><div class="p-eyebrow">'+(hub?'deep-dive · spawned from '+esc(hub.title):'notebook · intention')+'</div>'+
     '<h2 class="p-title">'+esc(sp.title)+'</h2><p class="p-intent">'+esc(sp.intent)+'</p></div>'+
     '<div class="p-body" id="body'+i+'"></div>';
   p.addEventListener('click',e=>{ if(mode==='overview'){ e.stopPropagation(); enter(i);} });
@@ -279,9 +311,11 @@ async function renderNotebook(i){
       if(c.from) chips+='↳ derived from <span class="ghostchip" data-open="'+esc(c.from)+'">'+esc(c.from)+'</span>'+(c.via?' via '+esc(c.via):'');
       if(c['also-in']&&c['also-in'].length) chips+=(chips?' · ':'')+'↳ also in '+
         c['also-in'].map(s=>'<span class="ghostchip" data-space="'+esc(s.id)+'">'+esc(s.title)+'</span>').join(' ');
+      const mkable=(c.alternatives||[]).some(a=>a[1]==='Rows');   // table-shaped → ✦ make lives here too
       cellsH+='<div class="cellwrap" data-cell="'+c.i+'">'+bar+
         '<div class="cellmold"><div class="hd"><span class="t" data-open="'+esc(c.id)+'">'+esc(c.title)+'</span>'+
-        '<span class="chip">'+esc(c.id)+'</span><select data-remold="'+c.i+'">'+opts+'</select></div>'+
+        '<span class="chip">'+esc(c.id)+'</span><select data-remold="'+c.i+'">'+opts+'</select>'+
+        (mkable?'<button class="mkcell" data-make="'+esc(c.id)+'" title="✦ make… — ask for a view, a computed table, or a visualization of this data">✦</button>':'')+'</div>'+
         '<div class="bd">'+renderMold(c)+'</div>'+(chips?'<div class="chips">'+chips+'</div>':'')+'</div></div>';
     }
   });
@@ -305,20 +339,25 @@ async function renderNotebook(i){
   b.querySelector('#askBtn').addEventListener('click',()=>startAsk(i));
   b.querySelector('#researchBtn').addEventListener('click',()=>startResearch(i));
   b.querySelector('#draftBtn').addEventListener('click',async()=>{
-    const res=await API.delegate(sp.id);
+    let res; try{ res=await API.delegate(sp.id); }catch(e){ showToast('draft: network error'); return; }
+    if(res.error){ showToast('draft: '+res.error); return; }
     applyState(res.state); openId=res.openId; rebuild(); openObject(res.openId);
     showToast('Draft written by the agent (reversible)', undo);
   });
   b.querySelector('#importBtn').addEventListener('click',()=>startImport(i));
   b.querySelector('#ddBtn').addEventListener('click',async()=>{
-    b.innerHTML='<div class="sec-h">deep-diving</div><div style="color:var(--muted);font-size:13px">the agent is proposing subtopics, spawning connected notebooks and researching each — this takes a while…</div>';
-    const res=await API.deepDive(sp.id);
+    b.innerHTML='<div class="sec-h">deep-diving</div><div style="color:var(--muted);font-size:13px">the agent is proposing subtopics, spawning connected notebooks and researching each — this takes a while. You can keep working; they land when ready…</div>';
+    let res; try{ res=await API.deepDive(sp.id); }catch(e){ showToast('deep-dive: network error'); renderBody(i); return; }
     if(res.error){ showToast('deep-dive: '+res.error); renderBody(i); return; }
-    applyState(res.state); rebuild();
-    showToast('Spawned '+res.spawned.length+' connected deep-dive notebook'+(res.spawned.length===1?'':'s'));
+    pollJob(res.job, r=>{
+      if(r.error){ showToast('deep-dive: '+r.error); if(mode==='focus'&&focusIdx===i&&!openId) renderBody(i); return; }
+      applyState(r.state); safeRebuild();
+      showToast('Spawned '+r.spawned.length+' connected deep-dive notebook'+(r.spawned.length===1?'':'s'));
+    });
   });
   b.querySelectorAll('[data-remold]').forEach(sel=>sel.addEventListener('change',()=>cellOp(i,{op:'set-view',idx:+sel.dataset.remold,view:sel.value})));
   b.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>openObject(el.dataset.open)));
+  b.querySelectorAll('[data-make]').forEach(el=>el.addEventListener('click',ev=>{ev.stopPropagation();makeOn(el.dataset.make);}));
   b.querySelectorAll('[data-space]').forEach(el=>el.addEventListener('click',()=>{
     const j=STATE.spaces.findIndex(s=>s.id===el.dataset.space); if(j>=0) enter(j);
   }));
@@ -351,11 +390,17 @@ function startResearch(i){
     '<div style="font-size:12px;color:var(--muted);margin-top:8px">the agent searches the web &amp; your data, then saves a findings note into this space</div>';
   const go=async()=>{
     const p=b.querySelector('#rq').value.trim(); if(!p) return;
-    b.innerHTML='<div class="sec-h">researching</div><div style="color:var(--muted);font-size:13px">searching the web &amp; your data — this can take a few seconds…</div>';
-    const res=await API.research(sp.id, p);
+    b.innerHTML='<div class="sec-h">researching</div><div style="color:var(--muted);font-size:13px">searching the web &amp; your data — this can take a minute…</div>';
+    let res; try{ res=await API.research(sp.id, p); }catch(e){ showToast('research: network error'); renderBody(i); return; }
     if(res.error){ showToast('research: '+res.error); renderBody(i); return; }
-    applyState(res.state); openId=res.openId; rebuild(); openObject(res.openId);
-    showToast('Findings saved to '+sp.title+' — reversible', undo);
+    pollJob(res.job, r=>{
+      if(r.error){ showToast('research: '+r.error); if(mode==='focus'&&focusIdx===i&&!openId) renderBody(i); return; }
+      applyState(r.state);
+      // only jump to the findings if the user is still waiting in this notebook
+      if(mode==='focus'&&focusIdx===i&&!openId){ openId=r.openId; rebuild(); openObject(r.openId); }
+      else safeRebuild();
+      showToast('Findings saved to '+sp.title+' — reversible', undo);
+    });
   };
   b.querySelector('#goRes').addEventListener('click',go);
   b.querySelector('#rq').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
@@ -434,6 +479,11 @@ function runApplet(m){
 // ONE creative verb over a table. The user says what they want; the agent picks
 // the simplest mechanism (a view, an animation, or a computed table) and routes
 // to it. No technique buttons — loci decides and tells you what it did.
+// cell-level ✦: open the object and land straight in the make prompt
+async function makeOn(id){
+  await openObject(id);
+  const mk=document.querySelector('#makebtn'); if(mk) mk.click();
+}
 function startDo(i,m){
   const body=document.getElementById('body'+i).querySelector('#moldbody');
   body.innerHTML='<div class="actions"><input id="mq" placeholder="what do you want from this data? e.g. “gdp by continent as a bar” · “add a density column” · “top 10 by revenue” · “animate the orbits”" '+
@@ -650,7 +700,7 @@ async function openFunctions(){
   let h='<div class="modalcard" style="max-width:780px">'+
     '<div class="modal-h"><span style="font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:2px 7px">FUNCTIONS</span>'+
     '<span class="q">'+list.length+' in the substrate · each a reversible, inspectable object</span></div><div class="modal-b">';
-  if(!list.length) h+='<div style="color:var(--muted);font-size:13px">No functions yet — on a table use <b>▶ code a view</b>, <b>ƒ compute (JS)</b> or <b>λ compute (Clojure)</b>.</div>';
+  if(!list.length) h+='<div style="color:var(--muted);font-size:13px">No functions yet — on any table cell hit <b>✦</b> (or open the table and use <b>✦ make…</b>) and describe what you want: a view, a computed table, or a visualization.</div>';
   list.forEach(f=>{
     h+='<div style="border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:10px">'+
       '<div style="font-size:13px;font-weight:500">'+esc(f.title)+'</div>'+

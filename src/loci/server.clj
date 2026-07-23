@@ -44,9 +44,11 @@
   (let [objs (vals (sub/objects st))]
     {:events  (count (sub/history st))
      :spaces  (->> objs (filter #(= :space (:kind %)))
-                   (map (fn [s] {:id (:id s) :title (:title s)
-                                 :intent (get-in s [:value :intent])
-                                 :members (vec (keep :ref (nb/cells-of s)))}))
+                   (map (fn [s] (cond-> {:id (:id s) :title (:title s)
+                                         :intent (get-in s [:value :intent])
+                                         :members (vec (keep :ref (nb/cells-of s)))}
+                                  (get-in s [:value :spawned-by :space])
+                                  (assoc :spawned-by (get-in s [:value :spawned-by :space])))))
                    vec)
      :objects (->> objs (remove #(#{:space :viewspec :applet :fn} (:kind %)))
                    (map (fn [o] {:id (:id o) :title (:title o) :kind (name (:kind o))}))
@@ -509,6 +511,36 @@
           {:state (state-payload st) :spawned spawned})))
     (catch Exception e {:error (.getMessage e)})))
 
+;; ---- jobs: long agent flows (research, deep-dive) run off-request so the
+;; browser never holds a minutes-long fetch. The frontend polls /api/job. ----
+(defonce ^:private job-seq (atom 0))
+(defonce ^:private jobs (atom {}))
+
+(defn start-job! [f]
+  (let [id (str "job:" (swap! job-seq inc))]
+    (swap! jobs assoc id {:done false})
+    (future
+      (let [r (try (f) (catch Exception e {:error (.getMessage e)}))]
+        (swap! jobs assoc id {:done true :result r})))
+    id))
+
+(defn job-status [id]
+  ;; unknown id is :done so a poller stops (e.g. after a server restart)
+  (get @jobs id {:done true :error (str "unknown job: " id)}))
+
+(defn- notebook-or-error [st space]
+  (let [sp (sub/object st space)]
+    (when-not (= :space (:kind sp)) {:error (str "not a notebook: " space)})))
+
+(defn deep-dive-start! [st space]
+  (or (notebook-or-error st space)
+      {:job (start-job! #(deep-dive! st space))}))
+
+(defn research-start! [st space prompt]
+  (or (notebook-or-error st space)
+      (when (str/blank? prompt) {:error "empty prompt"})
+      {:job (start-job! #(research! st space prompt))}))
+
 ;; ---- routing ----
 (defn handler [{:keys [uri query-string] :as req}]
   (let [st (store)
@@ -522,7 +554,8 @@
       (= uri "/api/undo")    (do (sub/undo! st) (json-resp (state-payload st)))
       (= uri "/api/edit")    (let [{:keys [id value]} (body-json req)] (json-resp (edit! st id value)))
       (= uri "/api/delegate")(let [{:keys [space]} (body-json req)] (json-resp (delegate! st space)))
-      (= uri "/api/research")(let [{:keys [space prompt]} (body-json req)] (json-resp (research! st space prompt)))
+      (= uri "/api/research")(let [{:keys [space prompt]} (body-json req)] (json-resp (research-start! st space prompt)))
+      (= uri "/api/job")     (json-resp (job-status (params "id")))
       (= uri "/api/do")      (let [{:keys [id prompt space]} (body-json req)] (json-resp (do! st id prompt space)))
       (= uri "/api/functions")(json-resp (functions-list st))
       (= uri "/api/new-space")(let [{:keys [prompt]} (body-json req)] (json-resp (new-space! st prompt)))
@@ -538,7 +571,7 @@
                                                     (mold/recall @mem/memory qq {:k 20})
                                                     (mem/all-facts @mem/memory)))})
       (= uri "/api/deep-dive")(if (= :post (:request-method req))
-                                (json-resp (deep-dive! st (:space (body-json req))))
+                                (json-resp (deep-dive-start! st (:space (body-json req))))
                                 {:status 405 :headers {"Content-Type" "text/plain"} :body "POST only"})
       (str/starts-with? uri "/api/object/")
       (json-resp (mold-payload st (java.net.URLDecoder/decode (subs uri (count "/api/object/")) "UTF-8") nil))

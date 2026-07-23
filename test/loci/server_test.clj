@@ -48,6 +48,62 @@
     (is (nil? (:error (srv/edit! st "doc:a" "y"))))
     (is (= "y" (:value (sub/object st "doc:a"))))))
 
+(defn- await-job [id]
+  (loop [n 0]
+    (let [s (srv/job-status id)]
+      (if (or (:done s) (> n 100))
+        s
+        (do (Thread/sleep 50) (recur (inc n)))))))
+
+(deftest jobs-run-async-and-surface-results
+  (let [id (srv/start-job! (fn [] {:x 1}))]
+    (is (string? id))
+    (let [s (await-job id)]
+      (is (:done s))
+      (is (= {:x 1} (:result s))))))
+
+(deftest jobs-surface-thrown-errors
+  (let [s (await-job (srv/start-job! (fn [] (throw (Exception. "boom")))))]
+    (is (:done s))
+    (is (= "boom" (get-in s [:result :error])))))
+
+(deftest unknown-job-is-done-with-error
+  (let [s (srv/job-status "job:nope")]
+    (is (:done s))                 ; a poller must stop, not spin forever
+    (is (:error s))))
+
+(deftest deep-dive-start-validates-then-runs-as-job
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "tbl:t" :value {:id "tbl:t" :kind :table :title "T" :value [{:a 1}]}})
+    (sub/commit! st {:op :put :id "space:h" :value {:id "space:h" :kind :space :title "Hub" :value {:intent "i" :cells []}}})
+    (is (:error (srv/deep-dive-start! st "tbl:t")))     ; not a notebook
+    (is (:error (srv/deep-dive-start! st "nope")))      ; missing
+    (with-redefs [srv/deep-dive! (fn [_ _] {:spawned ["space:dd-1"]})]
+      (let [{:keys [job error]} (srv/deep-dive-start! st "space:h")]
+        (is (nil? error))
+        (is (= ["space:dd-1"] (get-in (await-job job) [:result :spawned])))))))
+
+(deftest research-start-validates-then-runs-as-job
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "space:h" :value {:id "space:h" :kind :space :title "Hub" :value {:intent "i" :cells []}}})
+    (is (:error (srv/research-start! st "nope" "q")))   ; missing notebook
+    (is (:error (srv/research-start! st "space:h" " "))) ; blank prompt
+    (with-redefs [srv/research! (fn [_ _ _] {:openId "find:h-1"})]
+      (let [{:keys [job error]} (srv/research-start! st "space:h" "q")]
+        (is (nil? error))
+        (is (= "find:h-1" (get-in (await-job job) [:result :openId])))))))
+
+(deftest state-payload-exposes-spawned-by
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "space:h" :value {:id "space:h" :kind :space :title "Hub" :value {:intent "i" :cells []}}})
+    (sub/commit! st {:op :put :id "space:dd-1"
+                     :value {:id "space:dd-1" :kind :space :title "Child"
+                             :value {:intent "sub" :cells []
+                                     :spawned-by {:space "space:h" :prompt "q"}}}})
+    (let [by-id (into {} (map (juxt :id identity)) (:spaces (srv/state-payload st)))]
+      (is (= "space:h" (get-in by-id ["space:dd-1" :spawned-by])))
+      (is (nil? (get-in by-id ["space:h" :spawned-by]))))))
+
 (deftest note-ids-survive-cell-removal
   (let [st (sub/fresh-store)]
     (sub/commit! st {:op :put :id "space:n" :value {:id "space:n" :kind :space :title "N" :value {:cells []}}})
