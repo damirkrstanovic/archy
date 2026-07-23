@@ -770,6 +770,9 @@ async function openFunctions(){
   let h='<div class="modalcard" style="max-width:780px">'+
     '<div class="modal-h"><span style="font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:2px 7px">FUNCTIONS</span>'+
     '<span class="q">'+list.length+' in the substrate · each a reversible, inspectable object</span></div><div class="modal-b">';
+  h+='<div class="sec-h">built-in library</div><div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">'+
+    'Filter rows · Group &amp; aggregate · Pivot · Top N · Change vs previous row · Share of total — '+
+    'available on any table cell via <b>ƒ</b>, previewed before anything is committed.</div>';
   if(!list.length) h+='<div style="color:var(--muted);font-size:13px">No functions yet — on any table cell hit <b>✦</b> (or open the table and use <b>✦ make…</b>) and describe what you want: a view, a computed table, or a visualization.</div>';
   list.forEach(f=>{
     h+='<div style="border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:10px">'+

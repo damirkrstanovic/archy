@@ -10,6 +10,11 @@ full report. Re-mold any cell from its menu — the data is stored once, the cel
 only points. Edit prose in place, add cells, reorder — every step is one
 substrate event: ↺ undo walks it all back. Restart the server: it's all still there.
 
+On any table cell, **ƒ** opens the function palette (filter, group, pivot,
+top-N, change, share — plus any functions the agent has written). Pick one,
+see a live before/after preview, Apply — the derived table lands as a new
+cell, provenance chips intact, one ↺ undo away.
+
 ## 2 · Research (agent + web)
 Focus **Semiconductors — research hub** → **Research** → e.g.
 "who fabricates leading-edge chips, and where are the supply chokepoints?".
