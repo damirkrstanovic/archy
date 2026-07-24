@@ -216,6 +216,61 @@
       (is (str/includes? (:label (second events)) "(+1)"))     ; tx aggregates
       (is (str/includes? (:label (nth events 2)) "doc:n")))))  ; delete labels the id
 
+(deftest fn-apply-stamps-params
+  (let [st (store-with-table)
+        r  (srv/fn-apply! st "tbl:t" "lib:top" {:by "revenue" :n "1" :order "desc"} "space:n")]
+    (is (= {:by "revenue" :n "1" :order "desc"} (:params (sub/object st (:openId r)))))))
+
+(deftest rerun-recomputes-the-chain-in-one-tx
+  (let [st (store-with-table)
+        ;; b = top-1 of t (lib, params stamped) ; c = doubled b (agent fn, code stored)
+        b  (:openId (srv/fn-apply! st "tbl:t" "lib:top" {:by "revenue" :n "1" :order "desc"} nil))
+        _  (sub/commit! st {:op :put :id "fn:t-1"
+                            :value {:id "fn:t-1" :kind :fn :title "fn: double"
+                                    :value {:lang "clojure" :code "(fn [rows] (mapv #(update % :revenue * 2) rows))"}}})
+        c  (:openId (srv/fn-apply! st "tbl:t" "fn:t-1" {} nil))   ; c derives from t too
+        ;; now change the SOURCE: EMEA revenue jumps past APAC
+        _  (sub/commit! st {:op :assoc :id "tbl:t" :path [:value]
+                            :value [{:region "EMEA" :revenue 900} {:region "APAC" :revenue 250}]})
+        before (count (sub/history st))
+        r  (srv/rerun! st "tbl:t")]
+    (is (= (inc before) (count (sub/history st))))                 ; ONE :tx for the whole chain
+    (is (= #{b c} (set (:refreshed r))))
+    (is (= [{:region "EMEA" :revenue 900}] (:value (sub/object st b))))       ; top-1 follows the new data
+    (is (= [1800 500] (map :revenue (:value (sub/object st c)))))             ; doubled fresh rows
+    (sub/undo! st)                                                 ; one undo restores BOTH
+    (is (= [{:region "APAC" :revenue 250}] (:value (sub/object st b))))))
+
+(deftest rerun-on-a-derived-table-refreshes-it-then-descendants
+  (let [st (store-with-table)
+        b  (:openId (srv/fn-apply! st "tbl:t" "lib:top" {:by "revenue" :n "2" :order "desc"} nil))
+        _  (sub/commit! st {:op :put :id "fn:t-1"
+                            :value {:id "fn:t-1" :kind :fn :title "fn: double"
+                                    :value {:lang "clojure" :code "(fn [rows] (mapv #(update % :revenue * 2) rows))"}}})
+        c  (:openId (srv/fn-apply! st b "fn:t-1" {} nil))          ; c derives from B (a chain!)
+        _  (sub/commit! st {:op :assoc :id "tbl:t" :path [:value]
+                            :value [{:region "X" :revenue 7} {:region "Y" :revenue 3}]})
+        r  (srv/rerun! st b)]                                      ; hit ↻ on the DERIVED table
+    (is (= [b c] (:refreshed r)))                                  ; parent before child
+    (is (= [14 6] (map :revenue (:value (sub/object st c)))))))    ; child used b's NEW rows
+
+(deftest rerun-skips-paramless-legacy-and-reports-why
+  (let [st (store-with-table)]
+    (sub/commit! st {:op :put :id "tbl:old"
+                     :value {:id "tbl:old" :kind :table :title "Old derived"
+                             :value [{:a 1}] :from "tbl:t" :via "lib:top"}})   ; no :params
+    (let [before (count (sub/history st))
+          r (srv/rerun! st "tbl:t")]
+      (is (= [] (:refreshed r)))
+      (is (= "tbl:old" (:id (first (:skipped r)))))
+      (is (string? (:why (first (:skipped r)))))
+      (is (= before (count (sub/history st)))))))                  ; nothing to refresh → no event
+
+(deftest rerun-validates
+  (let [st (store-with-table)]
+    (is (:error (srv/rerun! st "nope")))
+    (is (:error (srv/rerun! st "space:n")))))
+
 (deftest state-payload-time-travels-via-frozen-store
   (let [st (sub/fresh-store)]
     (sub/commit! st {:op :put :id "space:n" :value {:id "space:n" :kind :space :title "N" :value {:intent "i" :cells []}}})

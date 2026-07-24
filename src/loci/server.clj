@@ -349,7 +349,7 @@
                           (:title (sub/object st fid)) fid)
                   nid (next-id st "tbl:derived-")
                   tobj {:id nid :kind :table :title (str (:title src) " · " lbl)
-                        :value (:rows r) :from id :via fid}
+                        :value (:rows r) :from id :via fid :params params}
                   evs (cond-> [{:op :put :id nid :value tobj}]
                         (and space (space? st space))
                         (conj (nb/append-cell-event st space {:ref nid})))]
@@ -357,6 +357,63 @@
               {:state (state-payload st) :openId nid}))))
       {:error "functions work on tables"})
     (catch Exception e {:error (.getMessage e)})))
+
+;; ---- live lineage: derived tables know :from/:via/:params, so the whole
+;; downstream chain can be recomputed against fresh source rows — one :tx,
+;; one undo. Legacy tables without :params are skipped, never guessed. ----
+(defn- recompute [st working obj]
+  ;; working = {id -> newly-computed rows} for already-refreshed ancestors
+  (let [src-id (:from obj)
+        rows   (or (get working src-id) (:value (sub/object st src-id)))
+        via    (:via obj)]
+    (cond
+      (nil? rows) {:why (str "source " src-id " is gone")}
+      (str/starts-with? (str via) "fn:")
+      (if-let [code (get-in (sub/object st via) [:value :code])]
+        (try (let [r (run-clj-rows code rows)]        ; already {:rows}/{:error}
+               (if (:error r) {:why (:error r)} r))
+             (catch Exception e {:why (.getMessage e)}))
+        {:why (str "function " via " is gone")})
+      (str/starts-with? (str via) "lib:")
+      (if-let [ps (:params obj)]
+        (let [r (fnlib/run-fn via rows ps)]
+          (if (:error r) {:why (:error r)} {:rows (json-safe (:rows r))}))
+        {:why "made before lineage recorded its parameters — re-apply ƒ to refresh"})
+      :else {:why (str "unknown lineage via " via)})))
+
+(defn rerun!
+  "Refresh id (if derived) and everything derived from it, transitively.
+   Children recompute against their parent's NEW rows. All updates land as
+   one :tx. Returns {:state :refreshed [ids] :skipped [{:id :why}]}."
+  [st id]
+  (let [o (sub/object st id)]
+    (if-not (and o (= :table (:kind o)))
+      {:error (str "not a table: " id)}
+      (let [objs     (vals (sub/objects st))
+            children (fn [pid] (->> objs (filter #(= pid (:from %))) (sort-by :id) (map :id)))
+            ;; breadth-first over the :from DAG, parents before children
+            order    (loop [q (vec (if (:from o) [id] (children id))) seen #{} out []]
+                       (if (empty? q)
+                         out
+                         (let [[x & xs] q]
+                           (if (seen x)
+                             (recur (vec xs) seen out)
+                             (recur (vec (concat xs (children x))) (conj seen x) (conj out x))))))
+            {:keys [working refreshed skipped]}
+            (reduce (fn [{:keys [working refreshed skipped]} cid]
+                      (let [r (recompute st working (sub/object st cid))]
+                        (if (:rows r)
+                          {:working (assoc working cid (:rows r))
+                           :refreshed (conj refreshed cid) :skipped skipped}
+                          {:working working :refreshed refreshed
+                           :skipped (conj skipped {:id cid :why (:why r)})})))
+                    {:working {} :refreshed [] :skipped []}
+                    order)]
+        (when (seq refreshed)
+          (sub/commit! st {:op :tx :events (mapv (fn [cid] {:op :assoc :id cid :path [:value]
+                                                            :value (get working cid)})
+                                                 refreshed)}))
+        {:state (state-payload st) :refreshed refreshed :skipped skipped}))))
 
 ;; ONE verb over a table: the user says what they want, the agent picks the
 ;; simplest mechanism (declarative view-spec / browser applet / server-side
@@ -677,6 +734,7 @@
                                  (json-resp (fn-preview st id fnid params)))
       (= uri "/api/fn-apply")  (let [{:keys [id fnid params space]} (body-json req)]
                                  (json-resp (fn-apply! st id fnid params space)))
+      (= uri "/api/rerun")   (let [{:keys [id]} (body-json req)] (json-resp (rerun! st id)))
       (= uri "/api/new-space")(let [{:keys [prompt]} (body-json req)] (json-resp (new-space! st prompt)))
       (= uri "/api/ask")     (let [{:keys [prompt space]} (body-json req)] (json-resp (ask! st prompt space)))
       (= uri "/api/keep-note")(let [{:keys [space title text]} (body-json req)] (json-resp (keep-note! st space title text)))
