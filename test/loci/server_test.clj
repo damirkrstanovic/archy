@@ -24,6 +24,25 @@
       (is (contains? (groups "downgrades") "memory"))  ; memory fact
       (is (contains? (groups "notebook") "space")))))  ; notebook by title
 
+(deftest leap-finds-views-and-functions-with-target
+  (let [st (sub/fresh-store)
+        m  (mem/file-memory (tmpfile))]
+    (sub/commit! st {:op :put :id "tbl:p" :value {:id "tbl:p" :kind :table :title "Planets" :value [{:a 1}]}})
+    (sub/commit! st {:op :put :id "app:p-1"
+                     :value {:id "app:p-1" :kind :applet :title "app: orbits"
+                             :value {:target "tbl:p" :code ";" :label "▶ orbit animation"}}})
+    (sub/commit! st {:op :put :id "fn:p-1"
+                     :value {:id "fn:p-1" :kind :fn :title "fn: densities"
+                             :value {:source "tbl:p" :lang "clojure" :code "rows"}}})
+    (let [hits  (srv/leap-payload st m "orbit")
+          orbit (first (filter #(= "app:p-1" (:id %)) hits))]
+      (is (some? orbit))
+      (is (= "views & functions" (:group orbit)))
+      (is (= "tbl:p" (:target orbit))))
+    (is (some #(= "fn:p-1" (:id %)) (srv/leap-payload st m "densities")))
+    ;; query-only, like prose: the empty listing stays uncluttered
+    (is (not-any? #(= "app:p-1" (:id %)) (srv/leap-payload st m "")))))
+
 (deftest notebook-op-rejects-non-notebooks
   (let [st (sub/fresh-store)]
     (sub/commit! st {:op :put :id "tbl:t" :value {:id "tbl:t" :kind :table :title "T" :value [{:a 1}]}})

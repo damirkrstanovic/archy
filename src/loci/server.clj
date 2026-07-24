@@ -143,10 +143,19 @@
                        :when (and (= :doc (:kind o)) (string? (:value o))
                                   (hit? (:value o)) (not (hit? (:title o) (:id o))))]
                    {:id (:id o) :label (str (:title o) " · …" (snip (:value o))) :group "in text"}))
+        made  (when (seq q)
+                (for [o (vals (sub/objects st))
+                      :when (and (#{:applet :viewspec :fn} (:kind o))
+                                 (hit? (:title o) (:id o) (get-in o [:value :label])))]
+                  {:id (:id o)
+                   :label (str (or (get-in o [:value :label]) (:title o))
+                               " · on " (or (get-in o [:value :target]) (get-in o [:value :source]) "?"))
+                   :group "views & functions"
+                   :target (or (get-in o [:value :target]) (get-in o [:value :source]))}))
         mems (when (seq q)
                (map (fn [f] {:id "__memory__" :label (:fact f) :group "memory"})
                     (mold/recall mem q {:k 8})))]
-    (vec (concat (cap objs) (cap prose) (cap intext) (cap mems) verbs))))
+    (vec (concat (cap objs) (cap prose) (cap intext) (cap made) (cap mems) verbs))))
 
 ;; ---- notebook payload: cells hydrated (each ref molded by its chosen view),
 ;; rail links and also-in chips computed fresh every time ----
