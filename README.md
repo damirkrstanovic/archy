@@ -66,6 +66,8 @@ frontend only lays out the result.
 | `POST /api/fn-apply` | keep the result: derived table + cell, ONE reversible event, `from`/`via` provenance |
 | `GET /api/events` | the log, humanely labeled — feeds the ⏱ scrubber |
 | any read + `?at=N` | the same payload as-of event N — read-only time travel |
+| `POST /api/rerun` | recompute a derived table + everything downstream — one reversible event |
+| `POST /api/connect` | a NEW notebook unioning two others — non-destructive, originals intact |
 
 ## Layout
 

@@ -15,6 +15,9 @@ top-N, change, share — plus any functions the agent has written). Pick one,
 see a live before/after preview, Apply — the derived table lands as a new
 cell, provenance chips intact, one ↺ undo away.
 
+Derived tables stay alive: change the source, hit **↻** on the derived cell —
+the whole downstream chain recomputes in one reversible step.
+
 ## 2 · Research (agent + web)
 Focus **Semiconductors — research hub** → **Research** → e.g.
 "who fabricates leading-edge chips, and where are the supply chokepoints?".
@@ -44,3 +47,9 @@ Focus a notebook to read it as it was; nothing is editable in the past. This
 is the same event log undo walks — time made visible. **↩ now** (or esc)
 returns to the present. The ⌾ memory pane stays live: the scrubber travels
 the record, never the recall.
+
+## 6 · Connect two notebooks (offline)
+Focus a notebook, LEAP, type another notebook's name → **⧉ Connect**. A NEW
+notebook appears holding everything from both — the originals untouched, the
+connection visible in the overview and both rails. LEAP also finds everything
+you've *made*: type a view or function's name and land on its table, molded.
