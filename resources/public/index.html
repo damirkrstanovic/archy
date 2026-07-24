@@ -197,6 +197,8 @@ const API = {
   fns: id => fetch('/api/fns?id='+encodeURIComponent(id)).then(r=>r.json()),
   fnPreview: (id,fnid,params) => POST('/api/fn-preview',{id,fnid,params}),
   fnApply: (id,fnid,params,space) => POST('/api/fn-apply',{id,fnid,params,space}),
+  rerun: id => POST('/api/rerun',{id}),
+  connect: (a,b) => POST('/api/connect',{a,b}),
 };
 
 let STATE={spaces:[],objects:{}};
@@ -216,11 +218,11 @@ function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 async function boot(){ applyState(await API.state()); rebuild(); }
 function applyState(s){
   const fid=(STATE.spaces[focusIdx]||{}).id;
-  // cluster spawned notebooks right after their hub so the overview groups them
-  const byHub={}; s.spaces.forEach(sp=>{ const h=sp['spawned-by']; if(h) (byHub[h]=byHub[h]||[]).push(sp); });
+  // cluster spawned/connected notebooks right after their hub (first parent) so the overview groups them
+  const byHub={}; s.spaces.forEach(sp=>{ const h=sp['spawned-by']||((sp['merged-from']||[])[0]); if(h) (byHub[h]=byHub[h]||[]).push(sp); });
   const ordered=[], seen=new Set();
   const emit=sp=>{ if(seen.has(sp.id)) return; seen.add(sp.id); ordered.push(sp); (byHub[sp.id]||[]).forEach(emit); };
-  s.spaces.forEach(sp=>{ const h=sp['spawned-by']; if(!h||!s.spaces.some(x=>x.id===h)) emit(sp); });
+  s.spaces.forEach(sp=>{ const h=sp['spawned-by']||((sp['merged-from']||[])[0]); if(!h||!s.spaces.some(x=>x.id===h)) emit(sp); });
   s.spaces.forEach(sp=>{ if(!seen.has(sp.id)) emit(sp); });   // paranoia: never drop a panel
   STATE.spaces=ordered;
   STATE.objects={}; s.objects.forEach(o=>STATE.objects[o.id]=o); STATE.events=s.events;
@@ -274,10 +276,13 @@ function safeRebuild(){
 }
 
 function buildPanel(sp,i){
-  const hub = sp['spawned-by'] ? STATE.spaces.find(h=>h.id===sp['spawned-by']) : null;
+  const hubId = sp['spawned-by']||((sp['merged-from']||[])[0]);
+  const hub = hubId ? STATE.spaces.find(h=>h.id===hubId) : null;
+  const merged = sp['merged-from'];
+  const mtitles = merged ? merged.map(id=>((STATE.spaces.find(s=>s.id===id)||{}).title)||id).join(' × ') : '';
   const p=document.createElement('div'); p.className='panel'+(hub?' child':''); p.dataset.i=i;
-  p.innerHTML='<div class="p-status"><span class="adot"></span>'+(hub?'spawned':'notebook')+'</div>'+
-    '<div class="p-head"><div class="p-eyebrow">'+(hub?'deep-dive · spawned from '+esc(hub.title):'notebook · intention')+'</div>'+
+  p.innerHTML='<div class="p-status"><span class="adot"></span>'+(merged?'connected':hub?'spawned':'notebook')+'</div>'+
+    '<div class="p-head"><div class="p-eyebrow">'+(merged?'connected · '+esc(mtitles):hub?'deep-dive · spawned from '+esc(hub.title):'notebook · intention')+'</div>'+
     '<h2 class="p-title">'+esc(sp.title)+'</h2><p class="p-intent">'+esc(sp.intent)+'</p></div>'+
     '<div class="p-body" id="body'+i+'"></div>';
   p.addEventListener('click',e=>{ if(mode==='overview'){ e.stopPropagation(); enter(i);} });
@@ -342,6 +347,7 @@ async function renderNotebook(i){
       let opts=''; (c.alternatives||[]).forEach(([vid,label])=>{ opts+='<option value="'+vid+'"'+(vid===c.view?' selected':'')+'>'+esc(label)+'</option>'; });
       let chips='';
       if(c.from) chips+='↳ derived from <span class="ghostchip" data-open="'+esc(c.from)+'">'+esc(c.from)+'</span>'+(c.via?' via '+esc(c.via):'');
+      if(c.from) chips+=' <button class="mkcell" data-rerun="'+esc(c.id)+'" title="↻ re-run lineage — recompute this table from its source (and everything derived from it)">↻</button>';
       if(c['also-in']&&c['also-in'].length) chips+=(chips?' · ':'')+'↳ also in '+
         c['also-in'].map(s=>'<span class="ghostchip" data-space="'+esc(s.id)+'">'+esc(s.title)+'</span>').join(' ');
       const mkable=(c.alternatives||[]).some(a=>a[1]==='Rows');   // table-shaped → ✦ make lives here too
@@ -359,7 +365,7 @@ async function renderNotebook(i){
   const rail = nb.connected.length
     ? '<div class="rail"><div class="sec-h">connected · '+nb.connected.length+'</div>'+
       nb.connected.map(cn=>'<div class="raillink" data-space="'+esc(cn.id)+'"><b>'+esc(cn.title)+'</b><br><span class="why">'+
-        cn.reasons.map(r=>r.type==='spawned'?'deep-dive · spawned from here':r.type==='spawned-by'?'spawned this notebook':r.type==='shares'?'shares '+esc(r.obj):'lineage · '+esc(r.obj)).join('<br>')+
+        cn.reasons.map(r=>r.type==='spawned'?'deep-dive · spawned from here':r.type==='spawned-by'?'spawned this notebook':r.type==='shares'?'shares '+esc(r.obj):r.type==='merged-from'?'connected · made from this notebook':r.type==='merged'?'part of this connection':'lineage · '+esc(r.obj)).join('<br>')+
         '</span></div>').join('')+'</div>'
     : '';
   const actions='<div class="actions" style="margin-bottom:6px">'+
@@ -397,6 +403,18 @@ async function renderNotebook(i){
   b.querySelectorAll('[data-fnp]').forEach(el=>el.addEventListener('click',ev=>{
     ev.stopPropagation();
     openFnPalette(i, el.dataset.fnp, el.closest('.cellmold'));
+  }));
+  b.querySelectorAll('[data-rerun]').forEach(el=>el.addEventListener('click',async ev=>{
+    ev.stopPropagation();
+    if(TIME){ showToast('time mode — ↩ now to edit'); return; }
+    let r; try{ r=await API.rerun(el.dataset.rerun); }catch(e){ showToast('rerun: network error'); return; }
+    if(r.error){ showToast(r.error); return; }
+    if(TIME){ showToast('finished — ↩ now to see it'); return; }
+    applyState(r.state); renderBody(i);
+    const skips=(r.skipped||[]).length;
+    showToast('Recomputed '+r.refreshed.length+' table'+(r.refreshed.length===1?'':'s')+
+      (skips?' · '+skips+' skipped':'')+' — reversible', undo);
+    if(skips) console.log('rerun skipped:', r.skipped);
   }));
   b.querySelectorAll('[data-space]').forEach(el=>el.addEventListener('click',()=>{
     const j=STATE.spaces.findIndex(s=>s.id===el.dataset.space); if(j>=0) enter(j);
@@ -781,21 +799,45 @@ async function renderLeap(){
     ? [{id:'__ask__',label:'Ask the agent: “'+qv+'”',group:'ask',prompt:qv}]
         .concat(entries, [{id:'__new__',label:'New space (agent): “'+qv+'”',group:'create',prompt:qv}])
     : entries;
+  // ⧉ connect: from a focused notebook, a space hit offers a non-destructive merge
+  if(mode==='focus'&&!TIME&&qv&&STATE.spaces[focusIdx]){
+    const cur=STATE.spaces[focusIdx];
+    filtered.filter(r=>r.group==='space'&&r.id!==cur.id).slice(0,2).forEach(s=>{
+      filtered.push({id:'__connect:'+s.id, label:'⧉ Connect “'+cur.title+'” + “'+(s.label||s.id)+'”',
+                     group:'create', connect:s.id});
+    });
+  }
   if(sel>=filtered.length) sel=0;
   if(!filtered.length){ results.innerHTML='<div class="group">no match</div>'; return; }
   let h='',last=null,flat=0;
-  const gname={ask:'Ask',space:'Notebooks',viewer:'View verbs',create:'Create',prose:'In notebooks','in text':'In documents',memory:'Memory'};
+  const gname={ask:'Ask',space:'Notebooks',viewer:'View verbs',create:'Create',prose:'In notebooks','in text':'In documents',memory:'Memory','views & functions':'Views & functions'};
   filtered.forEach(e=>{ const grp=gname[e.group]||'Content';
     if(grp!==last){h+='<div class="group">'+grp+'</div>';last=grp;}
     const i=flat++; const cls=(e.group==='space')?'space':(e.group==='viewer'||e.group==='create'||e.group==='ask')?'verb':'';
-    const ic=e.group==='ask'?'✦':e.group==='space'?'▢':e.group==='viewer'?'▸':e.group==='create'?'✦':e.group==='memory'?'⌾':e.group==='prose'?'¶':e.group==='in text'?'§':'▤';
+    const ic=e.group==='ask'?'✦':e.group==='space'?'▢':e.group==='viewer'?'▸':e.group==='create'?'✦':e.group==='memory'?'⌾':e.group==='prose'?'¶':e.group==='in text'?'§':e.group==='views & functions'?'ƒ':'▤';
     h+='<div class="res '+cls+(i===sel?' sel':'')+'" data-i="'+i+'"><span class="ic">'+ic+'</span>'+
        '<span class="title">'+esc(e.label)+'</span><span class="gp">'+esc(e.id)+'</span></div>'; });
   results.innerHTML=h;
   results.querySelectorAll('.res').forEach(r=>{ r.addEventListener('mousemove',()=>{sel=+r.dataset.i;paintSel();}); r.addEventListener('click',()=>{sel=+r.dataset.i;act();}); });
 }
 function paintSel(){results.querySelectorAll('.res').forEach(r=>r.classList.toggle('sel',+r.dataset.i===sel));}
-function act(){ const e=filtered[sel]; if(!e) return;
+async function act(){ const e=filtered[sel]; if(!e) return;
+  if(e.connect){                       // ⧉ non-destructive merge of two notebooks
+    let r; try{ r=await API.connect(STATE.spaces[focusIdx].id, e.connect); }catch(err){ showToast('connect: network error'); return; }
+    if(r.error){ showToast(r.error); return; }
+    if(TIME){ showToast('finished — ↩ now to see it'); return; }
+    applyState(r.state); closeLeap(); rebuild();
+    const j=STATE.spaces.findIndex(s=>s.id===r.openId); if(j>=0) enter(j);
+    showToast('Connected — a new notebook, originals untouched (reversible)', undo);
+    return;
+  }
+  if(e.target){                        // a view/applet/function found by LEAP — land on its data, molded
+    closeLeap();
+    if(e.id.slice(0,3)==='fn:'){ openFunctions(); return; }
+    await openObject(e.target);
+    await remold(e.target, e.id);
+    return;
+  }
   if(e.group==='ask'){ askAgent(e.prompt, mode==='focus'?STATE.spaces[focusIdx].id:null); }
   else if(e.group==='create'){ createSpace(e.prompt); }
   else if(e.group==='space'){ const i=STATE.spaces.findIndex(s=>s.id===e.id); if(i>=0) enter(i); }
