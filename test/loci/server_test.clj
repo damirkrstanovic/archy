@@ -271,6 +271,42 @@
     (is (:error (srv/rerun! st "nope")))
     (is (:error (srv/rerun! st "space:n")))))
 
+(deftest connect-unions-two-notebooks-non-destructively
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "tbl:x" :value {:id "tbl:x" :kind :table :title "X" :value [{:a 1}]}})
+    (sub/commit! st {:op :put :id "space:a"
+                     :value {:id "space:a" :kind :space :title "Alpha"
+                             :value {:intent "ia" :cells [{:text "pa"} {:ref "tbl:x"}]}}})
+    (sub/commit! st {:op :put :id "space:b"
+                     :value {:id "space:b" :kind :space :title "Beta"
+                             :value {:intent "ib" :cells [{:ref "tbl:x" :view "table/pivot"} {:text "pb"}]}}})
+    (let [before (count (sub/history st))
+          r   (srv/connect! st "space:a" "space:b")
+          sid (:openId r)
+          sp  (sub/object st sid)]
+      (is (= (inc before) (count (sub/history st))))               ; ONE event
+      (is (= "Alpha × Beta" (:title sp)))
+      (is (= ["space:a" "space:b"] (get-in sp [:value :merged-from])))
+      ;; union: prose from both kept, shared ref deduped (first occurrence wins)
+      (is (= [{:text "pa"} {:ref "tbl:x"} {:text "pb"}] (get-in sp [:value :cells])))
+      ;; originals untouched
+      (is (= 2 (count (get-in (sub/object st "space:a") [:value :cells]))))
+      ;; state payload exposes merged-from
+      (let [by-id (into {} (map (juxt :id identity)) (:spaces (:state r)))]
+        (is (= ["space:a" "space:b"] (get-in by-id [sid :merged-from]))))
+      ;; undo removes the connected space, originals intact
+      (sub/undo! st)
+      (is (nil? (sub/object st sid)))
+      (is (sub/object st "space:a")))))
+
+(deftest connect-validates
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "space:a" :value {:id "space:a" :kind :space :title "A" :value {:cells []}}})
+    (is (:error (srv/connect! st "space:a" "space:a")))            ; self
+    (is (:error (srv/connect! st "space:a" "nope")))               ; missing
+    (is (:error (srv/connect! st "nope" "space:a")))
+    (is (= 1 (count (sub/history st))))))
+
 (deftest state-payload-time-travels-via-frozen-store
   (let [st (sub/fresh-store)]
     (sub/commit! st {:op :put :id "space:n" :value {:id "space:n" :kind :space :title "N" :value {:intent "i" :cells []}}})

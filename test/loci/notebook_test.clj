@@ -53,3 +53,15 @@
              (set (:reasons (by-id "space:sub")))))
       (is (= [{:type "derived" :obj "tbl:x"}] (:reasons (by-id "space:der"))))
       (is (= [{:id "space:sub" :title "Sub"}] (get also-in "tbl:x"))))))
+
+(deftest links-surface-merged-both-directions
+  (let [st (sub/fresh-store)]
+    (sub/commit! st {:op :put :id "space:a" :value {:id "space:a" :kind :space :title "A" :value {:cells []}}})
+    (sub/commit! st {:op :put :id "space:b" :value {:id "space:b" :kind :space :title "B" :value {:cells []}}})
+    (sub/commit! st {:op :put :id "space:mix-1"
+                     :value {:id "space:mix-1" :kind :space :title "A × B"
+                             :value {:cells [] :merged-from ["space:a" "space:b"]}}})
+    (let [reasons (fn [from to] (->> (:connected (nb/links st from))
+                                     (filter #(= to (:id %))) first :reasons (map :type) set))]
+      (is (contains? (reasons "space:mix-1" "space:a") "merged-from"))   ; child → parent
+      (is (contains? (reasons "space:a" "space:mix-1") "merged")))))     ; parent → child

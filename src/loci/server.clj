@@ -78,7 +78,9 @@
                                          :intent (get-in s [:value :intent])
                                          :members (vec (keep :ref (nb/cells-of s)))}
                                   (get-in s [:value :spawned-by :space])
-                                  (assoc :spawned-by (get-in s [:value :spawned-by :space])))))
+                                  (assoc :spawned-by (get-in s [:value :spawned-by :space]))
+                                  (get-in s [:value :merged-from])
+                                  (assoc :merged-from (get-in s [:value :merged-from])))))
                    vec)
      :objects (->> objs (remove #(#{:space :viewspec :applet :fn} (:kind %)))
                    (map (fn [o] {:id (:id o) :title (:title o) :kind (name (:kind o))}))
@@ -453,6 +455,27 @@
       {:state (state-payload st) :spaceId sid})
     (catch Exception e {:error (.getMessage e)})))
 
+;; ---- connect: the old prototype's non-destructive merge — a NEW space
+;; unioning two notebooks (prose kept, shared refs deduped), originals
+;; intact, one reversible event. Cross-space work = connect, not move. ----
+(defn connect! [st a b]
+  (let [oa (sub/object st a) ob (sub/object st b)]
+    (cond
+      (= a b) {:error "connect two different notebooks"}
+      (not (and (= :space (:kind oa)) (= :space (:kind ob))))
+      {:error "connect works on two notebooks"}
+      :else
+      (let [taken (fn [cells] (set (keep :ref cells)))
+            ca    (nb/cells-of oa)
+            cb    (vec (remove #(and (:ref %) ((taken ca) (:ref %))) (nb/cells-of ob)))
+            sid   (next-id st "space:mix-")
+            sp    {:id sid :kind :space :title (str (:title oa) " × " (:title ob))
+                   :value {:intent (str "everything from “" (:title oa) "” and “" (:title ob) "”, together")
+                           :cells (vec (concat ca cb))
+                           :merged-from [a b]}}]
+        (sub/commit! st {:op :put :id sid :value sp})
+        {:state (state-payload st) :openId sid}))))
+
 ;; ask — answer a question grounded in a compact digest of the workspace
 (defn- table-digest
   "Per-column aggregates so the agent can answer questions about a big table
@@ -736,6 +759,7 @@
                                  (json-resp (fn-apply! st id fnid params space)))
       (= uri "/api/rerun")   (let [{:keys [id]} (body-json req)] (json-resp (rerun! st id)))
       (= uri "/api/new-space")(let [{:keys [prompt]} (body-json req)] (json-resp (new-space! st prompt)))
+      (= uri "/api/connect")(let [{:keys [a b]} (body-json req)] (json-resp (connect! st a b)))
       (= uri "/api/ask")     (let [{:keys [prompt space]} (body-json req)] (json-resp (ask! st prompt space)))
       (= uri "/api/keep-note")(let [{:keys [space title text]} (body-json req)] (json-resp (keep-note! st space title text)))
       (= uri "/api/import-csv")(let [{:keys [title csv space]} (body-json req)] (json-resp (import-csv! st title csv space)))

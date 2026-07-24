@@ -76,6 +76,10 @@
                                     (conj {:type "spawned-by"}))
                                   (cond-> (= (get-in o [:value :spawned-by :space]) space-id)
                                     (conj {:type "spawned"}))
+                                  (cond-> (some #{(:id o)} (get-in nb [:value :merged-from]))
+                                    (conj {:type "merged-from"}))
+                                  (cond-> (some #{space-id} (get-in o [:value :merged-from]))
+                                    (conj {:type "merged"}))
                                   (into (map (fn [r] {:type "shares" :obj r}) (sort shares)))
                                   (into (map (fn [s] {:type "derived" :obj s}) (sort lineage))))]
                   (when (seq reasons) {:id (:id o) :title (:title o) :reasons reasons})))
