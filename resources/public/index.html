@@ -116,8 +116,8 @@
   .cellmold .hd{display:flex;align-items:center;gap:8px;padding:7px 11px;background:var(--panel);border-bottom:1px solid var(--line-2);font-size:12.5px}
   .cellmold .hd .t{font-weight:500;cursor:pointer} .cellmold .hd .t:hover{color:var(--accent)}
   .cellmold .hd select{margin-left:auto;padding:2px 6px;border-radius:6px;border:1px solid var(--line);font:inherit;font-size:11.5px}
-  .cellmold .hd .mkcell{border:1px solid var(--line);background:transparent;border-radius:6px;color:var(--accent);cursor:pointer;font-size:11.5px;padding:2px 7px}
-  .cellmold .hd .mkcell:hover{border-color:var(--accent-line);background:var(--accent-soft)}
+  .cellmold .mkcell{border:1px solid var(--line);background:transparent;border-radius:6px;color:var(--accent);cursor:pointer;font-size:11.5px;padding:2px 7px}
+  .cellmold .mkcell:hover{border-color:var(--accent-line);background:var(--accent-soft)}
   .fnpal{border:1px dashed var(--accent-line);border-radius:10px;background:var(--panel);padding:10px 12px;margin:0 0 10px}
   .fnchips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
   .fnchip{border:1px solid var(--line);background:var(--white);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer}
@@ -411,9 +411,9 @@ async function renderNotebook(i){
     if(r.error){ showToast(r.error); return; }
     if(TIME){ showToast('finished — ↩ now to see it'); return; }
     applyState(r.state); renderBody(i);
-    const skips=(r.skipped||[]).length;
-    showToast('Recomputed '+r.refreshed.length+' table'+(r.refreshed.length===1?'':'s')+
-      (skips?' · '+skips+' skipped':'')+' — reversible', undo);
+    const skips=(r.skipped||[]).length, n=r.refreshed.length;
+    showToast('Recomputed '+n+' table'+(n===1?'':'s')+
+      (skips?' · '+skips+' skipped':'')+(n?' — reversible':''), n?undo:null);
     if(skips) console.log('rerun skipped:', r.skipped);
   }));
   b.querySelectorAll('[data-space]').forEach(el=>el.addEventListener('click',()=>{
@@ -831,9 +831,9 @@ async function act(){ const e=filtered[sel]; if(!e) return;
     showToast('Connected — a new notebook, originals untouched (reversible)', undo);
     return;
   }
-  if(e.target){                        // a view/applet/function found by LEAP — land on its data, molded
+  if(e.id&&e.id.slice(0,3)==='fn:'&&e.group==='views & functions'){ closeLeap(); openFunctions(); return; }
+  if(e.target){                        // a view/applet found by LEAP — land on its data, molded
     closeLeap();
-    if(e.id.slice(0,3)==='fn:'){ openFunctions(); return; }
     await openObject(e.target);
     await remold(e.target, e.id);
     return;
