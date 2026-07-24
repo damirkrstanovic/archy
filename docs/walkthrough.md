@@ -52,4 +52,5 @@ the record, never the recall.
 Focus a notebook, LEAP, type another notebook's name → **⧉ Connect**. A NEW
 notebook appears holding everything from both — the originals untouched, the
 connection visible in the overview and both rails. LEAP also finds everything
-you've *made*: type a view or function's name and land on its table, molded.
+you've *made*: a view or animation hit lands on its table, already molded;
+a function hit opens the ƒ inspector.
