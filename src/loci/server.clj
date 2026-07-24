@@ -360,7 +360,7 @@
                           (:title (sub/object st fid)) fid)
                   nid (next-id st "tbl:derived-")
                   tobj {:id nid :kind :table :title (str (:title src) " · " lbl)
-                        :value (:rows r) :from id :via fid :params params}
+                        :value (:rows r) :from id :via fid :params (or params {})}
                   evs (cond-> [{:op :put :id nid :value tobj}]
                         (and space (space? st space))
                         (conj (nb/append-cell-event st space {:ref nid})))]
@@ -383,7 +383,7 @@
       (if-let [code (get-in (sub/object st via) [:value :code])]
         (try (let [r (run-clj-rows code rows)]        ; already {:rows}/{:error}
                (if (:error r) {:why (:error r)} r))
-             (catch Exception e {:why (.getMessage e)}))
+             (catch Exception e {:why (str "recompute failed: " (.getMessage e))}))
         {:why (str "function " via " is gone")})
       (str/starts-with? (str via) "lib:")
       (if-let [ps (:params obj)]
